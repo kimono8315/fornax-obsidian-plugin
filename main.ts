@@ -50,14 +50,28 @@ export class FornaxEngine {
 		// Split into paragraphs by double line breaks
 		const rawParagraphs = content.split('\n\n').filter(p => p.trim());
 		
-		// Process paragraphs to extract only visible sentences (filter out %% %% comments)
-		const sentences = rawParagraphs.map(para => {
+		// Process paragraphs to extract only visible sentences (filter out %% %% comments and headings)
+		const sentences: string[][] = [];
+		const nonHeadingRawParagraphs: string[] = [];
+		
+		rawParagraphs.forEach(para => {
+			const trimmed = para.trim();
+			// Skip markdown headings (paragraphs that start with #)
+			if (trimmed.startsWith('#')) {
+				return;
+			}
+			
+			// Keep non-heading paragraph in filtered list
+			nonHeadingRawParagraphs.push(para);
+			
+			// Process lines to filter out comments
 			const lines = para.split('\n');
-			return lines.filter(line => {
-				const trimmed = line.trim();
+			const filteredLines = lines.filter(line => {
+				const lineTrimed = line.trim();
 				// Keep only non-empty lines that aren't Obsidian comments
-				return trimmed && !(trimmed.startsWith('%%') && trimmed.endsWith('%%'));
+				return lineTrimed && !(lineTrimed.startsWith('%%') && lineTrimed.endsWith('%%'));
 			});
+			sentences.push(filteredLines);
 		});
 
 		// Reconstruct clean paragraphs from filtered sentences for UI display
@@ -66,7 +80,7 @@ export class FornaxEngine {
 		// Parse existing edits (from %% %% comments)
 		const edits = await this.parseExistingEdits(content);
 
-		return { paragraphs, sentences, edits, rawParagraphs };
+		return { paragraphs, sentences, edits, rawParagraphs: nonHeadingRawParagraphs };
 	}
 
 	private async parseExistingEdits(content: string): Promise<SentenceEdit[]> {
