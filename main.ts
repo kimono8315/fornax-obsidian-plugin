@@ -113,6 +113,7 @@ export class TelescopeOverlay {
 	private currentZoom: ZoomLevel = 'document';
 	private currentDocument: any = null;
 	private plugin: FornaxPlugin;
+	private isInternalUpdate: boolean = false;
 
 	constructor(container: HTMLElement, plugin: FornaxPlugin) {
 		this.container = container;
@@ -164,6 +165,12 @@ export class TelescopeOverlay {
 	}
 
 	async loadDocument(file: TFile) {
+		// Skip reload if this is from our own internal update
+		if (this.isInternalUpdate) {
+			this.isInternalUpdate = false;
+			return;
+		}
+		
 		const content = await this.plugin.app.vault.read(file);
 		this.currentDocument = await this.plugin.engine.parseDocument(content);
 		this.renderCurrentZoom();
@@ -354,7 +361,7 @@ export class TelescopeOverlay {
 			this.updateDropTargets(e, draggedElement, type);
 		};
 
-		const handleMouseUp = (e: MouseEvent) => {
+		const handleMouseUp = async (e: MouseEvent) => {
 			if (!isDragging || !draggedElement) return;
 			
 			// Find the drop target
@@ -370,7 +377,7 @@ export class TelescopeOverlay {
 			
 			// Perform the swap if we have a valid drop target
 			if (dropTarget && dropTarget !== draggedElement) {
-				this.swapElements(draggedElement, dropTarget, type);
+				await this.swapElements(draggedElement, dropTarget, type);
 			}
 			
 			draggedElement = null;
@@ -434,7 +441,7 @@ export class TelescopeOverlay {
 		});
 	}
 
-	private swapElements(draggedElement: HTMLElement, dropTarget: HTMLElement, type: 'paragraph' | 'sentence') {
+	private async swapElements(draggedElement: HTMLElement, dropTarget: HTMLElement, type: 'paragraph' | 'sentence') {
 		if (type === 'paragraph') {
 			const draggedIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
 			const dropIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
@@ -460,10 +467,43 @@ export class TelescopeOverlay {
 			this.currentDocument.sentences[draggedParaIndex][draggedSentIndex] = 
 				this.currentDocument.sentences[dropParaIndex][dropSentIndex];
 			this.currentDocument.sentences[dropParaIndex][dropSentIndex] = temp;
+			
+			// Update the paragraph content in the data model
+			this.updateParagraphsFromSentences();
 		}
+		
+		// Save changes to the actual file
+		await this.saveChangesToFile();
 		
 		// Re-render the current view to reflect the changes
 		this.renderCurrentZoom();
+	}
+
+	private updateParagraphsFromSentences() {
+		// Reconstruct paragraphs from sentences after sentence-level edits
+		this.currentDocument.paragraphs = this.currentDocument.sentences.map((sentenceArray: string[]) => 
+			sentenceArray.join(' ')
+		);
+	}
+
+	private async saveChangesToFile() {
+		// Get the current file from the plugin
+		const currentFile = this.plugin.app.workspace.getActiveFile();
+		if (!currentFile) return;
+
+		// Reconstruct the markdown content
+		const newContent = this.reconstructMarkdown();
+		
+		// Mark this as an internal update to prevent reload
+		this.isInternalUpdate = true;
+		
+		// Save to file
+		await this.plugin.app.vault.modify(currentFile, newContent);
+	}
+
+	private reconstructMarkdown(): string {
+		// Join paragraphs with double newlines to recreate markdown structure
+		return this.currentDocument.paragraphs.join('\n\n');
 	}
 
 	private openSentenceEditor(paraIndex: number, sentIndex: number, sentence: string) {
