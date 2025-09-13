@@ -331,22 +331,25 @@ export class TelescopeOverlay {
 
 		const handle = element.querySelector('.fornax-drag-handle') as HTMLElement;
 		
-		handle.onmousedown = (e) => {
+		const handleMouseDown = (e: MouseEvent) => {
 			isDragging = true;
 			startY = e.clientY;
 			startTop = element.offsetTop;
 			element.addClass('dragging');
 			document.body.style.cursor = 'grabbing';
+			
+			// Prevent text selection while dragging
+			e.preventDefault();
 		};
 
-		document.onmousemove = (e) => {
+		const handleMouseMove = (e: MouseEvent) => {
 			if (!isDragging) return;
 			
 			const deltaY = e.clientY - startY;
 			element.style.transform = `translateY(${deltaY}px)`;
 		};
 
-		document.onmouseup = () => {
+		const handleMouseUp = () => {
 			if (!isDragging) return;
 			
 			isDragging = false;
@@ -356,6 +359,11 @@ export class TelescopeOverlay {
 			
 			// TODO: Handle drop logic - reorder paragraphs/sentences
 		};
+
+		// Use addEventListener instead of direct assignment to avoid conflicts
+		handle.addEventListener('mousedown', handleMouseDown);
+		document.addEventListener('mousemove', handleMouseMove);
+		document.addEventListener('mouseup', handleMouseUp);
 	}
 
 	private openSentenceEditor(paraIndex: number, sentIndex: number, sentence: string) {
