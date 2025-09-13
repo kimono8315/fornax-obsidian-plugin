@@ -17,6 +17,14 @@ export interface SentenceEdit {
 	sentenceIndex: number;
 }
 
+export interface Section {
+	heading: string;
+	level: number; // 2 for ##, 3 for ###
+	paragraphs: string[];
+	startParagraphIndex: number;
+	endParagraphIndex: number;
+}
+
 type ZoomLevel = 'document' | 'paragraphs' | 'sentences';
 
 // ===============================================
@@ -46,6 +54,7 @@ export class FornaxEngine {
 		sentences: string[][];
 		edits: SentenceEdit[];
 		rawParagraphs?: string[]; // Store raw paragraphs with comments for reconstruction
+		sections?: Section[]; // Store section structure for document view
 	}> {
 		// Split into paragraphs by double line breaks
 		const rawParagraphs = content.split('\n\n').filter(p => p.trim());
@@ -66,14 +75,60 @@ export class FornaxEngine {
 		// Parse existing edits (from %% %% comments)
 		const edits = await this.parseExistingEdits(content);
 
-		return { paragraphs, sentences, edits, rawParagraphs };
+		// Parse section structure for document view
+		const sections = this.parseSectionStructure(rawParagraphs);
+
+		return { paragraphs, sentences, edits, rawParagraphs, sections };
+	}
+
+	private parseSectionStructure(rawParagraphs: string[]): Section[] {
+		const sections: Section[] = [];
+		let currentSection: Section | null = null;
+
+		rawParagraphs.forEach((paragraph, index) => {
+			const trimmed = paragraph.trim();
+
+			// Check if this paragraph is a heading (ignore # level 1 headings - they're for titles)
+			if (trimmed.startsWith('##') && !trimmed.startsWith('###')) {
+				// ## Level 2 heading - start new section
+				if (currentSection) {
+					currentSection.endParagraphIndex = index - 1;
+					sections.push(currentSection);
+				}
+
+				currentSection = {
+					heading: trimmed.replace(/^##\s*/, ''),
+					level: 2,
+					paragraphs: [],
+					startParagraphIndex: index,
+					endParagraphIndex: index
+				};
+			} else if (trimmed.startsWith('###')) {
+				// ### Level 3 heading - add to current section as a special paragraph
+				if (currentSection) {
+					currentSection.paragraphs.push(paragraph);
+				}
+			} else if (currentSection) {
+				// Regular paragraph - add to current section
+				currentSection.paragraphs.push(paragraph);
+			}
+			// If no current section and it's not a heading, it's content before any sections
+		});
+
+		// Don't forget the last section
+		if (currentSection) {
+			currentSection.endParagraphIndex = rawParagraphs.length - 1;
+			sections.push(currentSection);
+		}
+
+		return sections;
 	}
 
 	private async parseExistingEdits(content: string): Promise<SentenceEdit[]> {
 		// Parse markdown comments for stored alternatives
 		const commentRegex = /<!--\s*FORNAX_EDIT:(.+?)\s*-->/g;
 		const edits: SentenceEdit[] = [];
-		
+
 		let match;
 		while ((match = commentRegex.exec(content)) !== null) {
 			try {
@@ -83,7 +138,7 @@ export class FornaxEngine {
 				console.warn('Failed to parse Fornax edit:', match[1]);
 			}
 		}
-		
+
 		return edits;
 	}
 
@@ -111,6 +166,7 @@ export class TelescopeOverlay {
 	currentDocument: any = null;
 	plugin: FornaxPlugin;
 	isInternalUpdate: boolean = false;
+	private targetScrollElement: string | null = null; // For auto-scrolling to specific elements
 
 	constructor(container: HTMLElement, plugin: FornaxPlugin) {
 		this.container = container;
@@ -167,9 +223,10 @@ export class TelescopeOverlay {
 		this.renderCurrentZoom();
 	}
 
-	private setZoomLevel(level: ZoomLevel) {
+	private setZoomLevel(level: ZoomLevel, targetElement?: string) {
 		this.currentZoom = level;
-		
+		this.targetScrollElement = targetElement || null;
+
 		// Update button states
 		this.controlsEl.querySelectorAll('.fornax-zoom-btn').forEach(btn => {
 			btn.removeClass('active');
@@ -179,6 +236,22 @@ export class TelescopeOverlay {
 		})`)?.addClass('active');
 
 		this.renderCurrentZoom();
+	}
+
+	private scrollToTarget() {
+		if (!this.targetScrollElement) return;
+
+		// Give the DOM a moment to render, then scroll
+		setTimeout(() => {
+			const targetEl = this.contentEl.querySelector(this.targetScrollElement!);
+			if (targetEl) {
+				targetEl.scrollIntoView({
+					behavior: 'smooth',
+					block: 'start'
+				});
+			}
+			this.targetScrollElement = null; // Clear after use
+		}, 100);
 	}
 
 	renderCurrentZoom() {
@@ -197,154 +270,295 @@ export class TelescopeOverlay {
 				this.renderSentenceView();
 				break;
 		}
+
+		// Scroll to target element if specified
+		this.scrollToTarget();
 	}
 
 	private renderDocumentView() {
 		const docView = this.contentEl.createEl('div', { cls: 'fornax-document-view' });
-		
+
 		// Document overview with paragraph count and structure
 		const overview = docView.createEl('div', { cls: 'fornax-overview' });
 		overview.createEl('h3', { text: 'Document Structure' });
-		
+
 		const stats = overview.createEl('div', { cls: 'fornax-stats' });
-		stats.createEl('span', { 
-			cls: 'stat',
-			text: `${this.currentDocument.paragraphs.length} paragraphs`
+
+		// Count only non-heading paragraphs for statistics
+		const nonHeadingParagraphs = this.currentDocument.paragraphs.filter((para: string) => {
+			return !para.trim().startsWith('#');
 		});
-		
-		const totalSentences = this.currentDocument.sentences.reduce((sum: number, para: string[]) => sum + para.length, 0);
-		stats.createEl('span', { 
+		stats.createEl('span', {
+			cls: 'stat',
+			text: `${nonHeadingParagraphs.length} paragraphs`
+		});
+
+		// Count only non-heading sentences for statistics
+		const totalSentences = this.currentDocument.sentences.reduce((sum: number, para: string[]) => {
+			const nonHeadingSentences = para.filter((sentence: string) => !sentence.trim().startsWith('#'));
+			return sum + nonHeadingSentences.length;
+		}, 0);
+		stats.createEl('span', {
 			cls: 'stat',
 			text: `${totalSentences} sentences`
 		});
 
-		// Mini paragraph previews
-		const miniPreviews = docView.createEl('div', { cls: 'fornax-mini-paragraphs' });
-		this.currentDocument.paragraphs.forEach((para: string, i: number) => {
-			const miniPara = miniPreviews.createEl('div', { 
-				cls: 'fornax-mini-paragraph',
-				text: para.slice(0, 100) + (para.length > 100 ? '...' : '')
+		// Section blocks
+		if (this.currentDocument.sections && this.currentDocument.sections.length > 0) {
+			const sectionsContainer = docView.createEl('div', { cls: 'fornax-sections-container' });
+			this.renderSectionBlocks(sectionsContainer);
+		} else {
+			// Fallback: show mini paragraph previews if no sections found
+			const miniPreviews = docView.createEl('div', { cls: 'fornax-mini-paragraphs' });
+			this.currentDocument.paragraphs.forEach((para: string, i: number) => {
+				const miniPara = miniPreviews.createEl('div', {
+					cls: 'fornax-mini-paragraph',
+					text: para.slice(0, 100) + (para.length > 100 ? '...' : '')
+				});
+
+				miniPara.onclick = () => {
+					this.setZoomLevel('paragraphs', `[data-para-index="${i}"]`);
+				};
 			});
-			
-			miniPara.onclick = () => {
-				this.setZoomLevel('paragraphs');
-				// TODO: Scroll to specific paragraph
+		}
+	}
+
+	private renderSectionBlocks(container: HTMLElement) {
+		if (!this.currentDocument.sections) return;
+
+		this.currentDocument.sections.forEach((section: Section, sectionIndex: number) => {
+			const sectionBlock = container.createEl('div', {
+				cls: 'fornax-section-block',
+				attr: { 'data-section-index': sectionIndex.toString() }
+			});
+
+			// Section heading
+			const sectionHeader = sectionBlock.createEl('div', { cls: 'fornax-section-header' });
+			sectionHeader.createEl('h3', {
+				cls: 'fornax-section-title',
+				text: section.heading
+			});
+
+			// Section content - show preview of each paragraph
+			const sectionContent = sectionBlock.createEl('div', { cls: 'fornax-section-content' });
+
+			section.paragraphs.forEach((paragraph: string, paragraphIndex: number) => {
+				const cleanParagraph = this.cleanParagraphForPreview(paragraph);
+
+				// Check if this is a ### third-level heading
+				if (paragraph.trim().startsWith('###')) {
+					const subheading = sectionContent.createEl('div', {
+						cls: 'fornax-third-level-heading',
+						text: paragraph.trim().replace(/^###\s*/, '')
+					});
+				} else if (cleanParagraph.trim()) {
+					// Regular paragraph - show first sentence
+					const sentences = cleanParagraph.split('\n').filter(s => s.trim());
+					if (sentences.length > 0) {
+						const paragraphPreview = sectionContent.createEl('div', {
+							cls: 'fornax-paragraph-preview',
+							text: sentences[0].slice(0, 80) + (sentences[0].length > 80 ? '...' : '')
+						});
+					}
+				}
+			});
+
+			// Click to zoom to paragraphs view and scroll to this section
+			sectionBlock.onclick = () => {
+				// Find the first paragraph of this section to scroll to
+				const sectionStartIndex = section.startParagraphIndex;
+				this.setZoomLevel('paragraphs', `[data-para-index="${sectionStartIndex}"]`);
 			};
 		});
 	}
 
+	private cleanParagraphForPreview(paragraph: string): string {
+		// Remove %% %% comments for clean preview display
+		const lines = paragraph.split('\n');
+		return lines.filter(line => {
+			const trimmed = line.trim();
+			return trimmed && !(trimmed.startsWith('%%') && trimmed.endsWith('%%'));
+		}).join('\n');
+	}
+
 	private renderParagraphView() {
 		const paraView = this.contentEl.createEl('div', { cls: 'fornax-paragraph-view' });
-		
+
 		console.log('Rendering paragraph view with', this.currentDocument.paragraphs.length, 'paragraphs');
-		
-		// Draggable paragraph blocks
+
+		// Render all paragraphs, including headings
 		for (let i = 0; i < this.currentDocument.paragraphs.length; i++) {
 			const para = this.currentDocument.paragraphs[i];
 			console.log('Creating paragraph', i);
-			
-			// Check paragraph status for styling
-			const hasComments = this.paragraphHasComments(i);
-			const isComplete = this.paragraphIsComplete(i);
-			
-			// Determine CSS classes based on status
-			// Priority: yellow (alternatives) overrides green (complete)
-			let cssClasses = 'fornax-paragraph-block';
-			if (hasComments) {
-				cssClasses += ' fornax-has-alternatives';
-			} else if (isComplete) {
-				cssClasses += ' fornax-paragraph-complete';
+
+			const isHeading = para.trim().startsWith('#');
+
+			if (isHeading) {
+				// Render heading as non-movable block
+				const headingBlock = paraView.createEl('div', {
+					cls: 'fornax-heading-block',
+					attr: { 'data-para-index': i.toString() }
+				});
+
+				// Heading content (no drag handle)
+				headingBlock.createEl('div', {
+					cls: 'fornax-heading-content',
+					text: para.trim()
+				});
+			} else {
+				// Check paragraph status for styling
+				const hasComments = this.paragraphHasComments(i);
+				const isComplete = this.paragraphIsComplete(i);
+
+				// Determine CSS classes based on status
+				// Priority: yellow (alternatives) overrides green (complete)
+				let cssClasses = 'fornax-paragraph-block';
+				if (hasComments) {
+					cssClasses += ' fornax-has-alternatives';
+				} else if (isComplete) {
+					cssClasses += ' fornax-paragraph-complete';
+				}
+
+				const paraBlock = paraView.createEl('div', {
+					cls: cssClasses,
+					attr: { 'data-para-index': i.toString() }
+				});
+
+				// Drag handle
+				const dragHandle = paraBlock.createEl('div', {
+					cls: 'fornax-drag-handle',
+					text: '::'
+				});
+				console.log('Created drag handle:', dragHandle);
+
+				// Paragraph content
+				const content = paraBlock.createEl('div', {
+					cls: 'fornax-paragraph-content',
+					text: para
+				});
+
+				// Sentence count badge
+				paraBlock.createEl('div', {
+					cls: 'fornax-sentence-count',
+					text: `${this.currentDocument.sentences[i].length} sentences`
+				});
+
+				// Completion toggle button
+				const completionBtn = paraBlock.createEl('button', {
+					cls: 'fornax-completion-btn',
+					text: isComplete ? '✅' : '☐'
+				});
+				completionBtn.title = isComplete ? 'Mark as incomplete' : 'Mark as complete';
+				completionBtn.onclick = (e) => {
+					e.stopPropagation(); // Prevent zoom action
+					this.toggleParagraphCompletion(i);
+				};
+
+				// Click to zoom into sentences and scroll to this paragraph
+				content.onclick = () => {
+					const paragraphNumber = this.getParagraphDisplayNumber(i);
+					if (paragraphNumber > 0) {
+						this.setZoomLevel('sentences', `[data-paragraph-number="${paragraphNumber}"]`);
+					} else {
+						this.setZoomLevel('sentences');
+					}
+				};
+
+				console.log('About to call makeDraggable for paragraph', i);
+
+				this.makeDraggable(paraBlock, 'paragraph');
 			}
-			
-			const paraBlock = paraView.createEl('div', { 
-				cls: cssClasses,
-				attr: { 'data-para-index': i.toString() }
-			});
-			
-			// Drag handle
-			const dragHandle = paraBlock.createEl('div', { 
-				cls: 'fornax-drag-handle', 
-				text: '::'
-			});
-			console.log('Created drag handle:', dragHandle);
-			
-			// Paragraph content
-			const content = paraBlock.createEl('div', { 
-				cls: 'fornax-paragraph-content',
-				text: para
-			});
-			
-			// Sentence count badge
-			paraBlock.createEl('div', { 
-				cls: 'fornax-sentence-count',
-				text: `${this.currentDocument.sentences[i].length} sentences`
-			});
-
-			// Completion toggle button
-			const completionBtn = paraBlock.createEl('button', { 
-				cls: 'fornax-completion-btn',
-				text: isComplete ? '✅' : '☐'
-			});
-			completionBtn.title = isComplete ? 'Mark as incomplete' : 'Mark as complete';
-			completionBtn.onclick = (e) => {
-				e.stopPropagation(); // Prevent zoom action
-				this.toggleParagraphCompletion(i);
-			};
-
-			// Click to zoom into sentences
-			content.onclick = () => {
-				this.setZoomLevel('sentences');
-			};
-
-			console.log('About to call makeDraggable for paragraph', i);
-			
-			this.makeDraggable(paraBlock, 'paragraph');
 		}
+	}
+
+	private getParagraphDisplayNumber(paragraphIndex: number): number {
+		// Calculate the display number for this paragraph (excluding headings)
+		const targetParagraph = this.currentDocument.paragraphs[paragraphIndex];
+		if (targetParagraph.trim().startsWith('#')) {
+			return 0; // Headings don't get paragraph numbers
+		}
+
+		let displayNumber = 0;
+		for (let i = 0; i <= paragraphIndex; i++) {
+			const paragraph = this.currentDocument.paragraphs[i];
+			if (!paragraph.trim().startsWith('#')) {
+				displayNumber++;
+			}
+		}
+		return displayNumber;
 	}
 
 	private renderSentenceView() {
 		const sentView = this.contentEl.createEl('div', { cls: 'fornax-sentence-view' });
-		
+
+		let paragraphCounter = 1;
+
 		this.currentDocument.sentences.forEach((sentences: string[], paraIndex: number) => {
-			// Paragraph header
-			const paraHeader = sentView.createEl('div', { 
-				cls: 'fornax-paragraph-header',
-				text: `Paragraph ${paraIndex + 1}`
-			});
+			// Check if this paragraph contains only headings
+			const hasNonHeadingContent = sentences.some(sentence => !sentence.trim().startsWith('#'));
+
+			if (hasNonHeadingContent) {
+				// Only show paragraph header for paragraphs with actual content
+				const paraHeader = sentView.createEl('div', {
+					cls: 'fornax-paragraph-header',
+					text: `Paragraph ${paragraphCounter}`,
+					attr: { 'data-paragraph-number': paragraphCounter.toString() }
+				});
+				paragraphCounter++;
+			}
 
 			// Sentence blocks within this paragraph
 			const sentenceContainer = sentView.createEl('div', { cls: 'fornax-sentence-container' });
-			
+
 			sentences.forEach((sentence: string, sentIndex: number) => {
-				// Check if this sentence has alternatives
-				const hasAlternatives = this.sentenceHasAlternatives(paraIndex, sentIndex);
-				
-				const sentBlock = sentenceContainer.createEl('div', { 
-					cls: `fornax-sentence-block ${hasAlternatives ? 'fornax-has-alternatives' : ''}`,
-					attr: { 
-						'data-para-index': paraIndex.toString(),
-						'data-sent-index': sentIndex.toString()
-					}
-				});
-				
-				// Drag handle
-				sentBlock.createEl('div', { cls: 'fornax-drag-handle', text: '::' });
-				
-				// Sentence content (editable)
-				const content = sentBlock.createEl('div', { 
-					cls: 'fornax-sentence-content',
-					text: sentence
-				});
+				const isHeading = sentence.trim().startsWith('#');
 
-				// Edit button
-				const editBtn = sentBlock.createEl('button', { 
-					cls: 'fornax-edit-sentence-btn',
-					text: '✏️'
-				});
-				
-				editBtn.onclick = () => this.openSentenceEditor(paraIndex, sentIndex, sentence);
+				if (isHeading) {
+					// Render heading as non-movable block (no paragraph header above it)
+					const headingBlock = sentenceContainer.createEl('div', {
+						cls: 'fornax-heading-block',
+						attr: {
+							'data-para-index': paraIndex.toString(),
+							'data-sent-index': sentIndex.toString()
+						}
+					});
 
-				this.makeDraggable(sentBlock, 'sentence');
+					// Heading content (no drag handle, no edit button)
+					headingBlock.createEl('div', {
+						cls: 'fornax-heading-content',
+						text: sentence.trim()
+					});
+				} else {
+					// Check if this sentence has alternatives
+					const hasAlternatives = this.sentenceHasAlternatives(paraIndex, sentIndex);
+
+					const sentBlock = sentenceContainer.createEl('div', {
+						cls: `fornax-sentence-block ${hasAlternatives ? 'fornax-has-alternatives' : ''}`,
+						attr: {
+							'data-para-index': paraIndex.toString(),
+							'data-sent-index': sentIndex.toString()
+						}
+					});
+
+					// Drag handle
+					sentBlock.createEl('div', { cls: 'fornax-drag-handle', text: '::' });
+
+					// Sentence content (editable)
+					const content = sentBlock.createEl('div', {
+						cls: 'fornax-sentence-content',
+						text: sentence
+					});
+
+					// Edit button
+					const editBtn = sentBlock.createEl('button', {
+						cls: 'fornax-edit-sentence-btn',
+						text: '✏️'
+					});
+
+					editBtn.onclick = () => this.openSentenceEditor(paraIndex, sentIndex, sentence);
+
+					this.makeDraggable(sentBlock, 'sentence');
+				}
 			});
 		});
 	}
@@ -395,7 +609,7 @@ export class TelescopeOverlay {
 			
 			// Perform the insertion if we have a valid drop target
 			if (dropInfo && dropInfo.target !== draggedElement) {
-				await this.insertElement(draggedElement, dropInfo.target, dropInfo.position, type);
+				await this.insertElement(draggedElement, dropInfo.target, dropInfo.position, type, dropInfo.isHeading);
 			}
 			
 			draggedElement = null;
@@ -410,98 +624,125 @@ export class TelescopeOverlay {
 	private updateDropTargets(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence') {
 		// Clear existing highlights
 		this.clearDropTargets(type);
-		
-		// Find all potential drop targets
-		const targets = this.contentEl.querySelectorAll(
+
+		// Find all potential drop targets (both content blocks and headings)
+		const contentTargets = this.contentEl.querySelectorAll(
 			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
 		);
-		
-		targets.forEach(target => {
+		const headingTargets = this.contentEl.querySelectorAll('.fornax-heading-block');
+		const allTargets = [...Array.from(contentTargets), ...Array.from(headingTargets)];
+
+		allTargets.forEach(target => {
 			if (target === draggedElement) return;
-			
+
 			const rect = target.getBoundingClientRect();
 			const mouseY = e.clientY;
-			
+
 			// Check if mouse is over this target
 			if (mouseY >= rect.top && mouseY <= rect.bottom) {
 				// Determine position for visual feedback
 				const middleY = rect.top + rect.height / 2;
 				const position = mouseY < middleY ? 'before' : 'after';
-				
+
 				target.addClass('fornax-drop-target');
 				target.addClass(`fornax-drop-${position}`);
 			}
 		});
 	}
 
-	private findDropTarget(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence'): { target: HTMLElement, position: 'before' | 'after' } | null {
-		const targets = this.contentEl.querySelectorAll(
+	private findDropTarget(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence'): { target: HTMLElement, position: 'before' | 'after', isHeading?: boolean } | null {
+		// Find all potential drop targets (both content blocks and headings)
+		const contentTargets = this.contentEl.querySelectorAll(
 			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
 		);
-		
-		for (let i = 0; i < targets.length; i++) {
-			const target = targets[i];
+		const headingTargets = this.contentEl.querySelectorAll('.fornax-heading-block');
+		const allTargets = [...Array.from(contentTargets), ...Array.from(headingTargets)];
+
+		for (let i = 0; i < allTargets.length; i++) {
+			const target = allTargets[i] as HTMLElement;
 			if (target === draggedElement) continue;
-			
+
 			const rect = target.getBoundingClientRect();
 			const mouseY = e.clientY;
-			
+
 			if (mouseY >= rect.top && mouseY <= rect.bottom) {
 				// Determine if we're inserting before or after based on mouse position within the element
 				const middleY = rect.top + rect.height / 2;
 				const position = mouseY < middleY ? 'before' : 'after';
-				
-				return { target: target as HTMLElement, position };
+				const isHeading = target.classList.contains('fornax-heading-block');
+
+				return { target, position, isHeading };
 			}
 		}
-		
+
 		return null;
 	}
 
 	private clearDropTargets(type: 'paragraph' | 'sentence') {
-		const targets = this.contentEl.querySelectorAll(
+		// Clear highlights from both content blocks and headings
+		const contentTargets = this.contentEl.querySelectorAll(
 			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
 		);
-		
-		targets.forEach(target => {
+		const headingTargets = this.contentEl.querySelectorAll('.fornax-heading-block');
+		const allTargets = [...Array.from(contentTargets), ...Array.from(headingTargets)];
+
+		allTargets.forEach(target => {
 			target.removeClass('fornax-drop-target');
 			target.removeClass('fornax-drop-before');
 			target.removeClass('fornax-drop-after');
 		});
 	}
 
-	private async insertElement(draggedElement: HTMLElement, dropTarget: HTMLElement, position: 'before' | 'after', type: 'paragraph' | 'sentence') {
+	private async insertElement(draggedElement: HTMLElement, dropTarget: HTMLElement, position: 'before' | 'after', type: 'paragraph' | 'sentence', isHeadingTarget: boolean = false) {
 		if (type === 'paragraph') {
 			const draggedIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
-			const dropIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
-			
+			let dropIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
+
 			// Remove the dragged paragraph and its sentences from their current positions
 			const draggedParagraph = this.currentDocument.paragraphs.splice(draggedIndex, 1)[0];
 			const draggedSentences = this.currentDocument.sentences.splice(draggedIndex, 1)[0];
-			
+
 			// IMPORTANT: Also move the raw paragraph to preserve sentence blocks with comments
 			let draggedRawParagraph;
 			if (this.currentDocument.rawParagraphs) {
 				draggedRawParagraph = this.currentDocument.rawParagraphs.splice(draggedIndex, 1)[0];
 			}
-			
+
 			// Calculate the insertion index
 			let insertIndex = dropIndex;
-			
-			// Adjust for the removal if dragged was before the drop target
-			if (draggedIndex < dropIndex) {
-				insertIndex = dropIndex - 1;
+
+			// Special handling for heading targets
+			if (isHeadingTarget) {
+				// When dropping relative to a heading, we need to be more careful about positioning
+				if (position === 'before') {
+					// Insert before the heading - no adjustment needed
+					insertIndex = dropIndex;
+				} else {
+					// Insert after the heading - position after the heading
+					insertIndex = dropIndex + 1;
+				}
+			} else {
+				// Regular paragraph target handling
+				// Adjust for the removal if dragged was before the drop target
+				if (draggedIndex < dropIndex) {
+					insertIndex = dropIndex - 1;
+				}
+
+				// Adjust for before/after position
+				if (position === 'after') {
+					insertIndex += 1;
+				}
 			}
-			
-			// Adjust for before/after position
-			if (position === 'after') {
-				insertIndex += 1;
+
+			// Adjust for removal shift if needed
+			if (!isHeadingTarget && draggedIndex < dropIndex) {
+				insertIndex = Math.max(0, insertIndex);
 			}
-			
+
 			// Insert at the new position
 			this.currentDocument.paragraphs.splice(insertIndex, 0, draggedParagraph);
 			this.currentDocument.sentences.splice(insertIndex, 0, draggedSentences);
-			
+
 			// Also insert the raw paragraph with comments
 			if (this.currentDocument.rawParagraphs && draggedRawParagraph) {
 				this.currentDocument.rawParagraphs.splice(insertIndex, 0, draggedRawParagraph);
@@ -511,8 +752,59 @@ export class TelescopeOverlay {
 			// Moving sentence blocks between paragraphs
 			const draggedParaIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
 			const draggedSentIndex = parseInt(draggedElement.getAttribute('data-sent-index') || '0');
-			const dropParaIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
-			const dropSentIndex = parseInt(dropTarget.getAttribute('data-sent-index') || '0');
+			let dropParaIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
+			let dropSentIndex = parseInt(dropTarget.getAttribute('data-sent-index') || '0');
+
+			// Special handling for heading targets in sentence view
+			if (isHeadingTarget && position === 'after') {
+				// When dropping AFTER a heading, we want to create a new paragraph
+				// Extract the complete sentence block (including all alternatives/comments)
+				const draggedSentence = this.currentDocument.sentences[draggedParaIndex][draggedSentIndex];
+				let draggedSentenceBlock = [draggedSentence]; // Default to just the sentence
+
+				// Extract the complete sentence block from raw paragraphs (including comments)
+				if (this.currentDocument.rawParagraphs) {
+					const extractedBlock = this.extractSentenceBlock(this.currentDocument.rawParagraphs[draggedParaIndex], draggedSentIndex);
+					if (extractedBlock.length > 0) {
+						draggedSentenceBlock = extractedBlock;
+					}
+
+					// Remove the complete block from source paragraph
+					const updatedSourceParagraph = this.removeSentenceBlock(this.currentDocument.rawParagraphs[draggedParaIndex], draggedSentIndex);
+					this.currentDocument.rawParagraphs[draggedParaIndex] = updatedSourceParagraph;
+				}
+
+				// Remove from sentences array
+				this.currentDocument.sentences[draggedParaIndex].splice(draggedSentIndex, 1);
+
+				// Create a new paragraph after the target heading's paragraph
+				const insertParaIndex = dropParaIndex + 1;
+
+				// Insert new paragraph with the complete sentence block
+				this.currentDocument.sentences.splice(insertParaIndex, 0, [draggedSentence]);
+
+				// Insert new paragraph in raw paragraphs array with complete block
+				if (this.currentDocument.rawParagraphs) {
+					const newRawParagraph = draggedSentenceBlock.join('\n');
+					this.currentDocument.rawParagraphs.splice(insertParaIndex, 0, newRawParagraph);
+				}
+
+				// Update clean paragraphs array
+				this.currentDocument.paragraphs.splice(insertParaIndex, 0, draggedSentence);
+
+				// Re-sync the data structures to ensure consistency
+				this.syncFromRawParagraphs();
+
+				// Save and re-render
+				await this.saveChangesToFile();
+				this.renderCurrentZoom();
+				return; // Exit early, we've handled this case
+			} else if (isHeadingTarget) {
+				// Before heading - normal insertion logic
+				if (position === 'before') {
+					dropSentIndex = dropSentIndex;
+				}
+			}
 			
 			// Extract the entire sentence block (sentence + comments) from raw paragraphs
 			if (this.currentDocument.rawParagraphs) {
@@ -898,15 +1190,26 @@ export class TelescopeOverlay {
 	reconstructMarkdown(): string {
 		// Use raw paragraphs if available to preserve comments, otherwise fall back to clean reconstruction
 		if (this.currentDocument.rawParagraphs) {
-			return this.currentDocument.rawParagraphs.join('\n\n');
+			return this.ensureProperHeadingSpacing(this.currentDocument.rawParagraphs.join('\n\n'));
 		}
-		
+
 		// Fallback: reconstruct from clean sentences (for backwards compatibility)
 		const paragraphsWithLines = this.currentDocument.sentences.map((sentenceArray: string[]) => {
 			return sentenceArray.join('\n');
 		});
-		
-		return paragraphsWithLines.join('\n\n');
+
+		return this.ensureProperHeadingSpacing(paragraphsWithLines.join('\n\n'));
+	}
+
+	private ensureProperHeadingSpacing(content: string): string {
+		// Ensure proper spacing around headings - headings should have blank lines before and after
+		return content
+			// Fix spacing before headings: ensure there's a blank line before any heading that follows content
+			.replace(/([^\n])\n(#{1,6}\s)/g, '$1\n\n$2')
+			// Fix spacing after headings: ensure there's a blank line after any heading that's followed by content
+			.replace(/(#{1,6}\s[^\n]*)\n([^#\n])/g, '$1\n\n$2')
+			// Clean up multiple consecutive blank lines (more than 2 newlines becomes exactly 2)
+			.replace(/\n{3,}/g, '\n\n');
 	}
 
 	private openSentenceEditor(paraIndex: number, sentIndex: number, sentence: string) {
@@ -1100,6 +1403,91 @@ export class TelescopeOverlay {
 				.fornax-mini-paragraph:hover {
 					background: var(--background-primary);
 					border: 1px solid var(--interactive-accent);
+				}
+
+				.fornax-sections-container {
+					display: grid;
+					gap: 16px;
+					margin-top: 16px;
+				}
+
+				.fornax-section-block {
+					background: var(--background-secondary);
+					border: 1px solid var(--background-modifier-border);
+					border-radius: 8px;
+					padding: 16px;
+					cursor: pointer;
+					transition: all 0.2s ease;
+				}
+
+				.fornax-section-block:hover {
+					border-color: var(--interactive-accent);
+					box-shadow: 0 2px 8px var(--background-modifier-box-shadow);
+				}
+
+				.fornax-section-header {
+					border-bottom: 1px solid var(--background-modifier-border);
+					margin-bottom: 12px;
+					padding-bottom: 8px;
+				}
+
+				.fornax-section-title {
+					margin: 0;
+					color: var(--text-accent);
+					font-size: 16px;
+					font-weight: 600;
+				}
+
+				.fornax-section-content {
+					display: flex;
+					flex-direction: column;
+					gap: 6px;
+				}
+
+				.fornax-paragraph-preview {
+					color: var(--text-muted);
+					font-size: 14px;
+					line-height: 1.4;
+					padding: 4px 0;
+					border-left: 2px solid transparent;
+					padding-left: 8px;
+				}
+
+				.fornax-third-level-heading {
+					color: var(--text-normal);
+					font-weight: 500;
+					font-size: 14px;
+					background: var(--background-primary);
+					padding: 4px 8px;
+					border-radius: 3px;
+					border-left: 2px solid var(--text-accent);
+					font-style: italic;
+					opacity: 0.9;
+				}
+
+				.fornax-heading-block {
+					position: relative;
+					margin: 12px 0;
+					padding: 12px 16px;
+					background: var(--background-secondary);
+					border: 1px solid var(--background-modifier-border);
+					border-radius: 6px;
+					opacity: 0.6;
+					cursor: default;
+				}
+
+				.fornax-heading-content {
+					color: var(--text-muted);
+					font-weight: 600;
+					line-height: 1.4;
+					pointer-events: none;
+					user-select: none;
+				}
+
+				.fornax-heading-block.fornax-drop-target {
+					border-color: var(--interactive-accent) !important;
+					background: rgba(var(--interactive-accent-rgb, 0, 122, 255), 0.1) !important;
+					opacity: 1 !important;
 				}
 
 				.fornax-placeholder {
