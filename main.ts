@@ -17,6 +17,15 @@ export interface SentenceEdit {
 	sentenceIndex: number;
 }
 
+interface DocumentSection {
+	type: 'h2' | 'h3';
+	title: string;
+	content: string[];  // Raw paragraph content including this heading
+	subsections?: DocumentSection[];  // For h2 sections containing h3 sections
+	startIndex: number;  // Starting index in original content
+	endIndex: number;    // Ending index in original content
+}
+
 type ZoomLevel = 'document' | 'paragraphs' | 'sentences';
 
 // ===============================================
@@ -46,6 +55,7 @@ export class FornaxEngine {
 		sentences: string[][];
 		edits: SentenceEdit[];
 		rawParagraphs?: string[]; // Store raw paragraphs with comments for reconstruction
+		sections?: DocumentSection[]; // Hierarchical document structure
 	}> {
 		// Split into paragraphs by double line breaks
 		const rawParagraphs = content.split('\n\n').filter(p => p.trim());
@@ -80,7 +90,10 @@ export class FornaxEngine {
 		// Parse existing edits (from %% %% comments)
 		const edits = await this.parseExistingEdits(content);
 
-		return { paragraphs, sentences, edits, rawParagraphs: nonHeadingRawParagraphs };
+		// Parse document sections (## and ### headings)
+		const sections = this.parseDocumentSections(rawParagraphs);
+
+		return { paragraphs, sentences, edits, rawParagraphs: nonHeadingRawParagraphs, sections };
 	}
 
 	private async parseExistingEdits(content: string): Promise<SentenceEdit[]> {
@@ -99,6 +112,70 @@ export class FornaxEngine {
 		}
 		
 		return edits;
+	}
+
+	private parseDocumentSections(rawParagraphs: string[]): DocumentSection[] {
+		const sections: DocumentSection[] = [];
+		let currentH2: DocumentSection | null = null;
+		
+		for (let i = 0; i < rawParagraphs.length; i++) {
+			const para = rawParagraphs[i];
+			const trimmed = para.trim();
+			
+			// Check for ## headings (second level)
+			if (trimmed.startsWith('## ') && !trimmed.startsWith('### ')) {
+				// Save previous h2 section if exists
+				if (currentH2) {
+					currentH2.endIndex = i - 1;
+					sections.push(currentH2);
+				}
+				
+				// Start new h2 section
+				currentH2 = {
+					type: 'h2',
+					title: trimmed.substring(3).trim(),
+					content: [para],
+					subsections: [],
+					startIndex: i,
+					endIndex: i
+				};
+			}
+			// Check for ### headings (third level)
+			else if (trimmed.startsWith('### ')) {
+				if (currentH2) {
+					// Create h3 subsection
+					const h3Section: DocumentSection = {
+						type: 'h3',
+						title: trimmed.substring(4).trim(),
+						content: [para],
+						startIndex: i,
+						endIndex: i
+					};
+					currentH2.subsections!.push(h3Section);
+					currentH2.content.push(para);
+				}
+			}
+			// Regular content
+			else if (!trimmed.startsWith('#')) {
+				if (currentH2) {
+					currentH2.content.push(para);
+					// If we have subsections, add to the last one
+					if (currentH2.subsections!.length > 0) {
+						const lastSubsection = currentH2.subsections![currentH2.subsections!.length - 1];
+						lastSubsection.content.push(para);
+						lastSubsection.endIndex = i;
+					}
+				}
+			}
+		}
+		
+		// Add the last h2 section if exists
+		if (currentH2) {
+			currentH2.endIndex = rawParagraphs.length - 1;
+			sections.push(currentH2);
+		}
+		
+		return sections;
 	}
 
 	async saveEdit(file: TFile, edit: SentenceEdit) {
@@ -122,7 +199,13 @@ export class TelescopeOverlay {
 	private contentEl: HTMLElement;
 	private controlsEl: HTMLElement;
 	private currentZoom: ZoomLevel = 'document';
-	currentDocument: any = null;
+	currentDocument: {
+		paragraphs: string[];
+		sentences: string[][];
+		edits: SentenceEdit[];
+		rawParagraphs?: string[];
+		sections?: DocumentSection[];
+	} | null = null;
 	plugin: FornaxPlugin;
 	isInternalUpdate: boolean = false;
 
@@ -232,19 +315,75 @@ export class TelescopeOverlay {
 			text: `${totalSentences} sentences`
 		});
 
-		// Mini paragraph previews
-		const miniPreviews = docView.createEl('div', { cls: 'fornax-mini-paragraphs' });
-		this.currentDocument.paragraphs.forEach((para: string, i: number) => {
-			const miniPara = miniPreviews.createEl('div', { 
-				cls: 'fornax-mini-paragraph',
-				text: para.slice(0, 100) + (para.length > 100 ? '...' : '')
-			});
+		// Display hierarchical sections if available
+		if (this.currentDocument.sections && this.currentDocument.sections.length > 0) {
+			const sectionsContainer = docView.createEl('div', { cls: 'fornax-sections' });
+			sectionsContainer.createEl('h4', { text: 'Document Sections' });
 			
-			miniPara.onclick = () => {
-				this.setZoomLevel('paragraphs');
-				// TODO: Scroll to specific paragraph
-			};
+			this.currentDocument.sections.forEach((section, sectionIndex) => {
+				this.renderDocumentSection(sectionsContainer, section, sectionIndex);
+			});
+		} else {
+			// Fallback to paragraph previews if no sections
+			const miniPreviews = docView.createEl('div', { cls: 'fornax-mini-paragraphs' });
+			this.currentDocument.paragraphs.forEach((para: string, i: number) => {
+				const miniPara = miniPreviews.createEl('div', { 
+					cls: 'fornax-mini-paragraph',
+					text: para.slice(0, 100) + (para.length > 100 ? '...' : '')
+				});
+				
+				miniPara.onclick = () => {
+					this.setZoomLevel('paragraphs');
+				};
+			});
+		}
+	}
+
+	private renderDocumentSection(container: HTMLElement, section: DocumentSection, sectionIndex: number) {
+		// Create h2 section container
+		const sectionEl = container.createEl('div', { 
+			cls: 'fornax-section-h2',
+			attr: { 'data-section-index': sectionIndex.toString() }
 		});
+		
+		// Section header
+		const header = sectionEl.createEl('div', { cls: 'fornax-section-header' });
+		header.createEl('h5', { text: section.title });
+		header.createEl('span', { 
+			cls: 'fornax-section-stats',
+			text: `${section.content.length - 1} paragraphs` // -1 for the heading itself
+		});
+		
+		// Subsections (h3)
+		if (section.subsections && section.subsections.length > 0) {
+			const subsectionsContainer = sectionEl.createEl('div', { cls: 'fornax-subsections' });
+			
+			section.subsections.forEach((subsection, subsectionIndex) => {
+				const subsectionEl = subsectionsContainer.createEl('div', { 
+					cls: 'fornax-section-h3',
+					attr: { 
+						'data-section-index': sectionIndex.toString(),
+						'data-subsection-index': subsectionIndex.toString()
+					}
+				});
+				
+				// Subsection content
+				const subsectionHeader = subsectionEl.createEl('div', { cls: 'fornax-subsection-header' });
+				subsectionHeader.createEl('h6', { text: subsection.title });
+				subsectionHeader.createEl('span', { 
+					cls: 'fornax-section-stats',
+					text: `${subsection.content.length - 1} paragraphs` // -1 for the heading itself
+				});
+			});
+		}
+		
+		// Show section content preview
+		const contentPreview = sectionEl.createEl('div', { cls: 'fornax-section-preview' });
+		const nonHeadingContent = section.content.filter(para => !para.trim().startsWith('#'));
+		if (nonHeadingContent.length > 0) {
+			const previewText = nonHeadingContent[0].slice(0, 150) + (nonHeadingContent[0].length > 150 ? '...' : '');
+			contentPreview.createEl('p', { text: previewText });
+		}
 	}
 
 	private renderParagraphView() {
@@ -579,6 +718,7 @@ export class TelescopeOverlay {
 		// Re-render the current view to reflect the changes
 		this.renderCurrentZoom();
 	}
+
 
 	private updateParagraphsFromSentences() {
 		// Reconstruct paragraphs from sentences after sentence-level edits
@@ -1114,6 +1254,83 @@ export class TelescopeOverlay {
 				.fornax-mini-paragraph:hover {
 					background: var(--background-primary);
 					border: 1px solid var(--interactive-accent);
+				}
+
+				.fornax-sections {
+					margin-top: 16px;
+				}
+
+				.fornax-section-h2 {
+					margin: 16px 0;
+					padding: 16px;
+					background: var(--background-primary);
+					border: 1px solid var(--background-modifier-border);
+					border-radius: 8px;
+				}
+
+				.fornax-section-header {
+					display: flex;
+					justify-content: space-between;
+					align-items: center;
+					margin-bottom: 12px;
+					padding-bottom: 8px;
+					border-bottom: 1px solid var(--background-modifier-border);
+				}
+
+				.fornax-section-header h5 {
+					margin: 0;
+					color: var(--text-accent);
+					font-size: 16px;
+				}
+
+				.fornax-section-stats {
+					font-size: 12px;
+					color: var(--text-muted);
+					padding: 2px 8px;
+					background: var(--background-secondary);
+					border-radius: 10px;
+				}
+
+				.fornax-subsections {
+					margin: 12px 0 0 16px;
+				}
+
+				.fornax-section-h3 {
+					position: relative;
+					margin: 8px 0;
+					padding: 12px;
+					background: var(--background-secondary);
+					border: 1px solid var(--background-modifier-border);
+					border-radius: 6px;
+					transition: all 0.2s ease;
+				}
+
+				.fornax-section-h3:hover {
+					border-color: var(--interactive-accent);
+					box-shadow: 0 2px 8px var(--background-modifier-box-shadow);
+				}
+
+				.fornax-subsection-header {
+					display: flex;
+					justify-content: space-between;
+					align-items: center;
+				}
+
+				.fornax-subsection-header h6 {
+					margin: 0;
+					color: var(--text-normal);
+					font-size: 14px;
+				}
+
+				.fornax-section-preview {
+					margin-top: 8px;
+					font-size: 13px;
+					color: var(--text-muted);
+					line-height: 1.4;
+				}
+
+				.fornax-section-preview p {
+					margin: 0;
 				}
 
 				.fornax-placeholder {
