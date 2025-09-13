@@ -6,9 +6,7 @@ import { Plugin, PluginSettingTab, Setting, WorkspaceLeaf, TFile, App, ItemView,
 // ===============================================
 
 interface FornaxSettings {
-	workingFileSuffix: string;
-	autoSave: boolean;
-	telescopeMode: 'overlay' | 'sidebar';
+	// Settings interface kept for future use
 }
 
 export interface SentenceEdit {
@@ -26,9 +24,7 @@ type ZoomLevel = 'document' | 'paragraphs' | 'sentences';
 // ===============================================
 
 const DEFAULT_SETTINGS: FornaxSettings = {
-	workingFileSuffix: '-working',
-	autoSave: true,
-	telescopeMode: 'overlay'
+	// No settings currently needed
 };
 
 export const VIEW_TYPE_FORNAX = 'fornax-telescope';
@@ -100,14 +96,6 @@ export class FornaxEngine {
 		// Implementation details...
 	}
 
-	async getWorkingFile(originalFile: TFile): Promise<TFile | null> {
-		const workingPath = originalFile.path.replace(
-			'.md', 
-			`${this.settings.workingFileSuffix}.md`
-		);
-		
-		return this.app.vault.getAbstractFileByPath(workingPath) as TFile;
-	}
 }
 
 // ===============================================
@@ -1600,39 +1588,16 @@ class FornaxSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		containerEl.createEl('h2', { text: 'Fornax Settings' });
-
-		new Setting(containerEl)
-			.setName('Working file suffix')
-			.setDesc('Suffix for working files (e.g., "-working" creates "essay-working.md")')
-			.addText(text => text
-				.setPlaceholder('-working')
-				.setValue(this.plugin.settings.workingFileSuffix)
-				.onChange(async (value) => {
-					this.plugin.settings.workingFileSuffix = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Auto-save edits')
-			.setDesc('Automatically save sentence alternatives as you type')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.autoSave)
-				.onChange(async (value) => {
-					this.plugin.settings.autoSave = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Telescope mode')
-			.setDesc('How to display the telescopic interface')
-			.addDropdown(dropdown => dropdown
-				.addOption('overlay', 'Overlay on editor')
-				.addOption('sidebar', 'Sidebar panel')
-				.setValue(this.plugin.settings.telescopeMode)
-				.onChange(async (value) => {
-					this.plugin.settings.telescopeMode = value as 'overlay' | 'sidebar';
-					await this.plugin.saveSettings();
-				}));
+		
+		// Create placeholder text for when settings are added in the future
+		const placeholder = containerEl.createEl('p', { 
+			cls: 'setting-item-description',
+			text: 'No settings are currently available. Future configuration options will appear here.'
+		});
+		placeholder.style.fontStyle = 'italic';
+		placeholder.style.color = 'var(--text-muted)';
+		placeholder.style.textAlign = 'center';
+		placeholder.style.marginTop = '40px';
 	}
 }
 
