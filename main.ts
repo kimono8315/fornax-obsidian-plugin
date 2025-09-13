@@ -758,7 +758,7 @@ export class TelescopeOverlay {
 	}
 
 	private paragraphHasComments(paraIndex: number): boolean {
-		// Check if a paragraph contains any %% %% comments
+		// Check if a paragraph contains any %% %% comments (excluding PARAGRAPH_COMPLETE)
 		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
 			return false;
 		}
@@ -766,11 +766,15 @@ export class TelescopeOverlay {
 		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
 		const lines = paragraph.split('\n');
 		
-		// Look for any %% %% comment lines
+		// Look for any %% %% comment lines that are NOT PARAGRAPH_COMPLETE
 		for (const line of lines) {
 			const trimmed = line.trim();
 			if (trimmed.startsWith('%%') && trimmed.endsWith('%%')) {
-				return true;
+				const commentContent = trimmed.slice(2, -2).trim();
+				// Ignore PARAGRAPH_COMPLETE comments, only count alternatives
+				if (commentContent !== 'PARAGRAPH_COMPLETE') {
+					return true;
+				}
 			}
 		}
 		
@@ -806,6 +810,9 @@ export class TelescopeOverlay {
 			return;
 		}
 
+		// Check if this paragraph has alternatives - if so, block completion and remove any existing completion markers
+		const hasAlternatives = this.paragraphHasComments(paraIndex);
+		
 		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
 		const lines = paragraph.split('\n');
 		let hasCompletionComment = false;
@@ -824,9 +831,14 @@ export class TelescopeOverlay {
 			newLines.push(line);
 		}
 
-		// If wasn't complete, add completion comment at the beginning
-		if (!hasCompletionComment) {
-			newLines.unshift('%% PARAGRAPH_COMPLETE %%');
+		// If paragraph has alternatives, don't allow completion (only remove existing markers)
+		if (hasAlternatives) {
+			// Don't add completion marker, just remove any existing ones
+		} else {
+			// If wasn't complete and no alternatives, add completion comment at the beginning
+			if (!hasCompletionComment) {
+				newLines.unshift('%% PARAGRAPH_COMPLETE %%');
+			}
 		}
 
 		// Update the raw paragraph
