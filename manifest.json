@@ -1,0 +1,11 @@
+{
+	"id": "fornax",
+	"name": "Fornax",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Telescopic writing: zoom between document structure, paragraphs, and sentences with drag-and-drop editing and sentence alternatives.",
+	"author": "Your Name",
+	"authorUrl": "https://your-website.com",
+	"fundingUrl": "https://your-funding-page.com",
+	"isDesktopOnly": false
+}
