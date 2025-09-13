@@ -253,9 +253,8 @@ export class TelescopeOverlay {
 			// Drag handle
 			const dragHandle = paraBlock.createEl('div', { 
 				cls: 'fornax-drag-handle', 
-				text: 'DRAG ME'
+				text: '::'
 			});
-			dragHandle.style.cssText = 'background: red !important; color: white !important; padding: 10px !important; position: relative !important; display: block !important; z-index: 9999 !important; font-size: 16px !important;';
 			console.log('Created drag handle:', dragHandle);
 			
 			// Paragraph content
@@ -304,7 +303,7 @@ export class TelescopeOverlay {
 				});
 				
 				// Drag handle
-				sentBlock.createEl('div', { cls: 'fornax-drag-handle', text: '⋮' });
+				sentBlock.createEl('div', { cls: 'fornax-drag-handle', text: '::' });
 				
 				// Sentence content (editable)
 				const content = sentBlock.createEl('div', { 
@@ -424,7 +423,7 @@ export class TelescopeOverlay {
 
 				.fornax-paragraph-block, .fornax-sentence-block {
 					position: relative;
-					margin: 12px 0;
+					margin: 12px 0 12px 32px;
 					padding: 16px;
 					background: var(--background-primary);
 					border: 1px solid var(--background-modifier-border);
@@ -439,16 +438,17 @@ export class TelescopeOverlay {
 
 				.fornax-drag-handle {
 					position: absolute;
-					left: 8px;
+					left: -20px;
 					top: 50%;
 					transform: translateY(-50%);
 					color: var(--text-muted);
 					cursor: grab;
 					font-size: 16px;
-					opacity: 1;
-					background: red;
+					opacity: 0.6;
 					padding: 4px;
 					z-index: 10;
+					font-weight: bold;
+					user-select: none;
 				}
 
 				.fornax-paragraph-block:hover .fornax-drag-handle,
