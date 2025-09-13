@@ -243,8 +243,21 @@ export class TelescopeOverlay {
 			const para = this.currentDocument.paragraphs[i];
 			console.log('Creating paragraph', i);
 			
+			// Check paragraph status for styling
+			const hasComments = this.paragraphHasComments(i);
+			const isComplete = this.paragraphIsComplete(i);
+			
+			// Determine CSS classes based on status
+			// Priority: yellow (alternatives) overrides green (complete)
+			let cssClasses = 'fornax-paragraph-block';
+			if (hasComments) {
+				cssClasses += ' fornax-has-alternatives';
+			} else if (isComplete) {
+				cssClasses += ' fornax-paragraph-complete';
+			}
+			
 			const paraBlock = paraView.createEl('div', { 
-				cls: 'fornax-paragraph-block',
+				cls: cssClasses,
 				attr: { 'data-para-index': i.toString() }
 			});
 			
@@ -266,6 +279,17 @@ export class TelescopeOverlay {
 				cls: 'fornax-sentence-count',
 				text: `${this.currentDocument.sentences[i].length} sentences`
 			});
+
+			// Completion toggle button
+			const completionBtn = paraBlock.createEl('button', { 
+				cls: 'fornax-completion-btn',
+				text: isComplete ? '✅' : '☐'
+			});
+			completionBtn.title = isComplete ? 'Mark as incomplete' : 'Mark as complete';
+			completionBtn.onclick = (e) => {
+				e.stopPropagation(); // Prevent zoom action
+				this.toggleParagraphCompletion(i);
+			};
 
 			// Click to zoom into sentences
 			content.onclick = () => {
@@ -292,8 +316,11 @@ export class TelescopeOverlay {
 			const sentenceContainer = sentView.createEl('div', { cls: 'fornax-sentence-container' });
 			
 			sentences.forEach((sentence: string, sentIndex: number) => {
+				// Check if this sentence has alternatives
+				const hasAlternatives = this.sentenceHasAlternatives(paraIndex, sentIndex);
+				
 				const sentBlock = sentenceContainer.createEl('div', { 
-					cls: 'fornax-sentence-block',
+					cls: `fornax-sentence-block ${hasAlternatives ? 'fornax-has-alternatives' : ''}`,
 					attr: { 
 						'data-para-index': paraIndex.toString(),
 						'data-sent-index': sentIndex.toString()
@@ -687,6 +714,146 @@ export class TelescopeOverlay {
 		this.currentDocument.paragraphs = paragraphs;
 	}
 
+	private sentenceHasAlternatives(paraIndex: number, sentIndex: number): boolean {
+		// Check if a sentence has alternatives stored in comments
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return false;
+		}
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+		
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+		
+		if (sentenceLineIndex === -1) return false;
+		
+		// Check for alternatives immediately following the sentence
+		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line.startsWith('%%') && line.endsWith('%%')) {
+				const commentContent = line.slice(2, -2).trim();
+				// If we find any comment that's not just SELECTED, there are alternatives
+				if (!commentContent.startsWith('SELECTED:')) {
+					return true;
+				}
+			} else if (line) {
+				// Hit next sentence, stop looking
+				break;
+			}
+		}
+		
+		return false;
+	}
+
+	private paragraphHasComments(paraIndex: number): boolean {
+		// Check if a paragraph contains any %% %% comments (excluding PARAGRAPH_COMPLETE)
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return false;
+		}
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		
+		// Look for any %% %% comment lines that are NOT PARAGRAPH_COMPLETE
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (trimmed.startsWith('%%') && trimmed.endsWith('%%')) {
+				const commentContent = trimmed.slice(2, -2).trim();
+				// Ignore PARAGRAPH_COMPLETE comments, only count alternatives
+				if (commentContent !== 'PARAGRAPH_COMPLETE') {
+					return true;
+				}
+			}
+		}
+		
+		return false;
+	}
+
+	private paragraphIsComplete(paraIndex: number): boolean {
+		// Check if a paragraph is marked as complete with PARAGRAPH_COMPLETE comment
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return false;
+		}
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		
+		// Look for PARAGRAPH_COMPLETE comment anywhere in the paragraph
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (trimmed.startsWith('%%') && trimmed.endsWith('%%')) {
+				const commentContent = trimmed.slice(2, -2).trim();
+				if (commentContent === 'PARAGRAPH_COMPLETE') {
+					return true;
+				}
+			}
+		}
+		
+		return false;
+	}
+
+	private async toggleParagraphCompletion(paraIndex: number) {
+		// Toggle the completion status of a paragraph
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return;
+		}
+
+		// Check if this paragraph has alternatives - if so, block completion and remove any existing completion markers
+		const hasAlternatives = this.paragraphHasComments(paraIndex);
+		
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let hasCompletionComment = false;
+		let newLines: string[] = [];
+
+		// Remove existing PARAGRAPH_COMPLETE comment if found
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (trimmed.startsWith('%%') && trimmed.endsWith('%%')) {
+				const commentContent = trimmed.slice(2, -2).trim();
+				if (commentContent === 'PARAGRAPH_COMPLETE') {
+					hasCompletionComment = true;
+					continue; // Skip this line (remove it)
+				}
+			}
+			newLines.push(line);
+		}
+
+		// If paragraph has alternatives, don't allow completion (only remove existing markers)
+		if (hasAlternatives) {
+			// Don't add completion marker, just remove any existing ones
+		} else {
+			// If wasn't complete and no alternatives, add completion comment at the beginning
+			if (!hasCompletionComment) {
+				newLines.unshift('%% PARAGRAPH_COMPLETE %%');
+			}
+		}
+
+		// Update the raw paragraph
+		this.currentDocument.rawParagraphs[paraIndex] = newLines.join('\n');
+		
+		// Re-sync the clean data structures
+		this.syncFromRawParagraphs();
+		
+		// Save changes to file
+		await this.saveChangesToFile();
+		
+		// Re-render to show the change
+		this.renderCurrentZoom();
+	}
+
 	private moveSentenceBlockWithinParagraph(
 		paragraph: string, 
 		fromIndex: number, 
@@ -872,6 +1039,23 @@ export class TelescopeOverlay {
 					opacity: 1;
 				}
 
+				.fornax-completion-btn {
+					position: absolute;
+					bottom: 8px;
+					right: 8px;
+					background: none;
+					border: none;
+					cursor: pointer;
+					font-size: 14px;
+					opacity: 0.7;
+					transition: opacity 0.2s ease;
+					padding: 2px 4px;
+				}
+
+				.fornax-paragraph-block:hover .fornax-completion-btn {
+					opacity: 1;
+				}
+
 				.fornax-paragraph-header {
 					font-weight: 600;
 					color: var(--text-accent);
@@ -942,6 +1126,31 @@ export class TelescopeOverlay {
 
 				.fornax-drop-after {
 					border-bottom: 3px solid var(--interactive-accent) !important;
+				}
+
+				.fornax-has-alternatives {
+					background: rgba(255, 235, 59, 0.15) !important;
+					border-left: 3px solid #ffc107 !important;
+				}
+
+				.fornax-paragraph-block.fornax-has-alternatives {
+					background: rgba(255, 235, 59, 0.1) !important;
+					border-left: 3px solid #ffc107 !important;
+				}
+
+				.fornax-sentence-block.fornax-has-alternatives {
+					background: rgba(255, 235, 59, 0.2) !important;
+					border-left: 3px solid #ffc107 !important;
+				}
+
+				.fornax-paragraph-complete {
+					background: rgba(76, 175, 80, 0.1) !important;
+					border-left: 3px solid #4caf50 !important;
+				}
+
+				.fornax-paragraph-block.fornax-paragraph-complete {
+					background: rgba(76, 175, 80, 0.15) !important;
+					border-left: 3px solid #4caf50 !important;
 				}
 			`;
 			document.head.appendChild(style);
