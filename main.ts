@@ -243,8 +243,11 @@ export class TelescopeOverlay {
 			const para = this.currentDocument.paragraphs[i];
 			console.log('Creating paragraph', i);
 			
+			// Check if this paragraph has comments
+			const hasComments = this.paragraphHasComments(i);
+			
 			const paraBlock = paraView.createEl('div', { 
-				cls: 'fornax-paragraph-block',
+				cls: `fornax-paragraph-block ${hasComments ? 'fornax-has-alternatives' : ''}`,
 				attr: { 'data-para-index': i.toString() }
 			});
 			
@@ -733,6 +736,26 @@ export class TelescopeOverlay {
 		return false;
 	}
 
+	private paragraphHasComments(paraIndex: number): boolean {
+		// Check if a paragraph contains any %% %% comments
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return false;
+		}
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		
+		// Look for any %% %% comment lines
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (trimmed.startsWith('%%') && trimmed.endsWith('%%')) {
+				return true;
+			}
+		}
+		
+		return false;
+	}
+
 	private moveSentenceBlockWithinParagraph(
 		paragraph: string, 
 		fromIndex: number, 
@@ -991,9 +1014,18 @@ export class TelescopeOverlay {
 				}
 
 				.fornax-has-alternatives {
-					background: var(--color-yellow-rgb) !important;
 					background: rgba(255, 235, 59, 0.15) !important;
-					border-left: 3px solid var(--color-yellow) !important;
+					border-left: 3px solid #ffc107 !important;
+				}
+
+				.fornax-paragraph-block.fornax-has-alternatives {
+					background: rgba(255, 235, 59, 0.1) !important;
+					border-left: 3px solid #ffc107 !important;
+				}
+
+				.fornax-sentence-block.fornax-has-alternatives {
+					background: rgba(255, 235, 59, 0.2) !important;
+					border-left: 3px solid #ffc107 !important;
 				}
 			`;
 			document.head.appendChild(style);
