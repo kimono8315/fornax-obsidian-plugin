@@ -292,8 +292,11 @@ export class TelescopeOverlay {
 			const sentenceContainer = sentView.createEl('div', { cls: 'fornax-sentence-container' });
 			
 			sentences.forEach((sentence: string, sentIndex: number) => {
+				// Check if this sentence has alternatives
+				const hasAlternatives = this.sentenceHasAlternatives(paraIndex, sentIndex);
+				
 				const sentBlock = sentenceContainer.createEl('div', { 
-					cls: 'fornax-sentence-block',
+					cls: `fornax-sentence-block ${hasAlternatives ? 'fornax-has-alternatives' : ''}`,
 					attr: { 
 						'data-para-index': paraIndex.toString(),
 						'data-sent-index': sentIndex.toString()
@@ -687,6 +690,49 @@ export class TelescopeOverlay {
 		this.currentDocument.paragraphs = paragraphs;
 	}
 
+	private sentenceHasAlternatives(paraIndex: number, sentIndex: number): boolean {
+		// Check if a sentence has alternatives stored in comments
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return false;
+		}
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+		
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+		
+		if (sentenceLineIndex === -1) return false;
+		
+		// Check for alternatives immediately following the sentence
+		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line.startsWith('%%') && line.endsWith('%%')) {
+				const commentContent = line.slice(2, -2).trim();
+				// If we find any comment that's not just SELECTED, there are alternatives
+				if (!commentContent.startsWith('SELECTED:')) {
+					return true;
+				}
+			} else if (line) {
+				// Hit next sentence, stop looking
+				break;
+			}
+		}
+		
+		return false;
+	}
+
 	private moveSentenceBlockWithinParagraph(
 		paragraph: string, 
 		fromIndex: number, 
@@ -942,6 +988,12 @@ export class TelescopeOverlay {
 
 				.fornax-drop-after {
 					border-bottom: 3px solid var(--interactive-accent) !important;
+				}
+
+				.fornax-has-alternatives {
+					background: var(--color-yellow-rgb) !important;
+					background: rgba(255, 235, 59, 0.15) !important;
+					border-left: 3px solid var(--color-yellow) !important;
 				}
 			`;
 			document.head.appendChild(style);
