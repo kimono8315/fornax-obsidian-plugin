@@ -21,11 +21,13 @@ The plugin is currently implemented as a single consolidated `main.ts` file cont
 
 1. **FornaxEngine** - Core business logic for document parsing and edit management
    - Parses markdown documents into paragraphs and sentences
-   - Handles sentence edit storage (via markdown comments or working files)
-   - Manages working file creation with `-working` suffix
+   - Parses hierarchical document structure (## and ### headings)
+   - Handles sentence edit storage via %% %% comments
+   - Filters out markdown headings from paragraph/sentence counts
 
 2. **TelescopeOverlay** - Main UI component providing the telescopic interface
    - Three zoom levels: Document view, Paragraph view, Sentence view
+   - Document view shows hierarchical section structure with ## and ### headings
    - Drag-and-drop functionality for reordering paragraphs and sentences
    - Custom CSS styling integrated into Obsidian's theme system
 
@@ -35,17 +37,19 @@ The plugin is currently implemented as a single consolidated `main.ts` file cont
    - Integrates with Obsidian's workspace system
 
 4. **Settings** - Plugin configuration
-   - Working file suffix (default: `-working`)
-   - Auto-save toggle
-   - Telescope mode (overlay vs sidebar)
+   - Displays README.md content in settings tab
+   - Minimal configuration interface
 
 ### Key Features
 
 - **Telescopic Editing**: Zoom between document/paragraph/sentence levels
+- **Document Structure View**: Hierarchical display of ## and ### sections with nested "Russian doll" layout
 - **Drag & Drop**: Reorder paragraphs and sentences with visual feedback
-- **Sentence Alternatives**: Edit and compare different versions of sentences
-- **Working Files**: Optional separate files for storing edit alternatives
-- **Markdown Integration**: Edits stored as HTML comments in markdown
+- **Sentence Alternatives**: Edit and compare different versions of sentences using %% %% comments
+- **Paragraph Completion**: Mark paragraphs as complete with green visual indicators
+- **Visual Status Indicators**: Yellow for paragraphs/sentences with alternatives, green for completed paragraphs
+- **Line-based Parsing**: Sentences are parsed by lines, not punctuation
+- **Heading Exclusion**: Markdown headings excluded from paragraph/sentence counts
 
 ### Plugin Integration Points
 
@@ -65,4 +69,22 @@ The plugin is currently implemented as a single consolidated `main.ts` file cont
 
 ### Current Development Status
 
-The plugin has basic functionality working but drag-and-drop interactions are being debugged. Test with clicking "DRAG ME" buttons in paragraph view to verify event handling before implementing full drag behavior.
+The plugin has full telescopic writing functionality implemented:
+- Document structure parsing with hierarchical sections works correctly
+- Paragraph and sentence drag-and-drop functionality is operational
+- Sentence alternatives system with %% %% comment storage is complete
+- Paragraph completion marking system with visual indicators is functional
+- All three zoom levels (Document, Paragraph, Sentence) are working
+
+### Data Storage
+
+- **Sentence alternatives**: Stored in %% %% comments within the markdown file
+- **Paragraph completion**: Marked with `%% PARAGRAPH_COMPLETE %%` comments
+- **Comments**: Invisible in Obsidian's reading view, preserved during operations
+- **Raw vs Clean**: Maintains both raw paragraphs (with comments) and clean data for UI display
+
+### Current Workflow
+
+1. **Save Selection**: Try alternative sentences, stored as comments
+2. **Commit (Final)**: Finalize sentence choice, remove alternatives
+3. **Completion Toggle**: Mark paragraphs as complete/incomplete via checkbox button
