@@ -409,7 +409,8 @@ export class TelescopeOverlay {
 			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
 		);
 		
-		for (const target of targets) {
+		for (let i = 0; i < targets.length; i++) {
+			const target = targets[i];
 			if (target === draggedElement) continue;
 			
 			const rect = target.getBoundingClientRect();
