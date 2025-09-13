@@ -365,7 +365,7 @@ export class TelescopeOverlay {
 			if (!isDragging || !draggedElement) return;
 			
 			// Find the drop target
-			const dropTarget = this.findDropTarget(e, draggedElement, type);
+			const dropInfo = this.findDropTarget(e, draggedElement, type);
 			
 			isDragging = false;
 			draggedElement.removeClass('dragging');
@@ -375,9 +375,9 @@ export class TelescopeOverlay {
 			// Clear drop target highlights
 			this.clearDropTargets(type);
 			
-			// Perform the swap if we have a valid drop target
-			if (dropTarget && dropTarget !== draggedElement) {
-				await this.swapElements(draggedElement, dropTarget, type);
+			// Perform the insertion if we have a valid drop target
+			if (dropInfo && dropInfo.target !== draggedElement) {
+				await this.insertElement(draggedElement, dropInfo.target, dropInfo.position, type);
 			}
 			
 			draggedElement = null;
@@ -406,12 +406,17 @@ export class TelescopeOverlay {
 			
 			// Check if mouse is over this target
 			if (mouseY >= rect.top && mouseY <= rect.bottom) {
+				// Determine position for visual feedback
+				const middleY = rect.top + rect.height / 2;
+				const position = mouseY < middleY ? 'before' : 'after';
+				
 				target.addClass('fornax-drop-target');
+				target.addClass(`fornax-drop-${position}`);
 			}
 		});
 	}
 
-	private findDropTarget(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence'): HTMLElement | null {
+	private findDropTarget(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence'): { target: HTMLElement, position: 'before' | 'after' } | null {
 		const targets = this.contentEl.querySelectorAll(
 			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
 		);
@@ -424,7 +429,11 @@ export class TelescopeOverlay {
 			const mouseY = e.clientY;
 			
 			if (mouseY >= rect.top && mouseY <= rect.bottom) {
-				return target as HTMLElement;
+				// Determine if we're inserting before or after based on mouse position within the element
+				const middleY = rect.top + rect.height / 2;
+				const position = mouseY < middleY ? 'before' : 'after';
+				
+				return { target: target as HTMLElement, position };
 			}
 		}
 		
@@ -438,23 +447,36 @@ export class TelescopeOverlay {
 		
 		targets.forEach(target => {
 			target.removeClass('fornax-drop-target');
+			target.removeClass('fornax-drop-before');
+			target.removeClass('fornax-drop-after');
 		});
 	}
 
-	private async swapElements(draggedElement: HTMLElement, dropTarget: HTMLElement, type: 'paragraph' | 'sentence') {
+	private async insertElement(draggedElement: HTMLElement, dropTarget: HTMLElement, position: 'before' | 'after', type: 'paragraph' | 'sentence') {
 		if (type === 'paragraph') {
 			const draggedIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
 			const dropIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
 			
-			// Swap paragraphs in the data model
-			const temp = this.currentDocument.paragraphs[draggedIndex];
-			this.currentDocument.paragraphs[draggedIndex] = this.currentDocument.paragraphs[dropIndex];
-			this.currentDocument.paragraphs[dropIndex] = temp;
+			// Remove the dragged paragraph and its sentences from their current positions
+			const draggedParagraph = this.currentDocument.paragraphs.splice(draggedIndex, 1)[0];
+			const draggedSentences = this.currentDocument.sentences.splice(draggedIndex, 1)[0];
 			
-			// Also swap sentences arrays
-			const tempSentences = this.currentDocument.sentences[draggedIndex];
-			this.currentDocument.sentences[draggedIndex] = this.currentDocument.sentences[dropIndex];
-			this.currentDocument.sentences[dropIndex] = tempSentences;
+			// Calculate the insertion index
+			let insertIndex = dropIndex;
+			
+			// Adjust for the removal if dragged was before the drop target
+			if (draggedIndex < dropIndex) {
+				insertIndex = dropIndex - 1;
+			}
+			
+			// Adjust for before/after position
+			if (position === 'after') {
+				insertIndex += 1;
+			}
+			
+			// Insert at the new position
+			this.currentDocument.paragraphs.splice(insertIndex, 0, draggedParagraph);
+			this.currentDocument.sentences.splice(insertIndex, 0, draggedSentences);
 			
 		} else {
 			const draggedParaIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
@@ -462,11 +484,24 @@ export class TelescopeOverlay {
 			const dropParaIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
 			const dropSentIndex = parseInt(dropTarget.getAttribute('data-sent-index') || '0');
 			
-			// Swap sentences in the data model
-			const temp = this.currentDocument.sentences[draggedParaIndex][draggedSentIndex];
-			this.currentDocument.sentences[draggedParaIndex][draggedSentIndex] = 
-				this.currentDocument.sentences[dropParaIndex][dropSentIndex];
-			this.currentDocument.sentences[dropParaIndex][dropSentIndex] = temp;
+			// Remove the dragged sentence
+			const draggedSentence = this.currentDocument.sentences[draggedParaIndex].splice(draggedSentIndex, 1)[0];
+			
+			// Calculate insertion index
+			let insertIndex = dropSentIndex;
+			
+			// Adjust for removal if within same paragraph and dragged was before drop target
+			if (draggedParaIndex === dropParaIndex && draggedSentIndex < dropSentIndex) {
+				insertIndex = dropSentIndex - 1;
+			}
+			
+			// Adjust for before/after position
+			if (position === 'after') {
+				insertIndex += 1;
+			}
+			
+			// Insert at the new position
+			this.currentDocument.sentences[dropParaIndex].splice(insertIndex, 0, draggedSentence);
 			
 			// Update the paragraph content in the data model
 			this.updateParagraphsFromSentences();
@@ -701,6 +736,14 @@ export class TelescopeOverlay {
 					border-color: var(--interactive-accent) !important;
 					background: var(--interactive-accent-hover) !important;
 					transform: scale(1.02);
+				}
+
+				.fornax-drop-before {
+					border-top: 3px solid var(--interactive-accent) !important;
+				}
+
+				.fornax-drop-after {
+					border-bottom: 3px solid var(--interactive-accent) !important;
 				}
 			`;
 			document.head.appendChild(style);
