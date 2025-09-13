@@ -49,19 +49,28 @@ export class FornaxEngine {
 		paragraphs: string[];
 		sentences: string[][];
 		edits: SentenceEdit[];
+		rawParagraphs?: string[]; // Store raw paragraphs with comments for reconstruction
 	}> {
-		// Split into paragraphs
-		const paragraphs = content.split('\n\n').filter(p => p.trim());
+		// Split into paragraphs by double line breaks
+		const rawParagraphs = content.split('\n\n').filter(p => p.trim());
 		
-		// Split paragraphs into sentences
-		const sentences = paragraphs.map(para => 
-			para.split(/[.!?]+/).filter(s => s.trim()).map(s => s.trim() + '.')
-		);
+		// Process paragraphs to extract only visible sentences (filter out %% %% comments)
+		const sentences = rawParagraphs.map(para => {
+			const lines = para.split('\n');
+			return lines.filter(line => {
+				const trimmed = line.trim();
+				// Keep only non-empty lines that aren't Obsidian comments
+				return trimmed && !(trimmed.startsWith('%%') && trimmed.endsWith('%%'));
+			});
+		});
 
-		// Parse existing edits (from comments or working file)
+		// Reconstruct clean paragraphs from filtered sentences for UI display
+		const paragraphs = sentences.map(sentenceArray => sentenceArray.join('\n'));
+
+		// Parse existing edits (from %% %% comments)
 		const edits = await this.parseExistingEdits(content);
 
-		return { paragraphs, sentences, edits };
+		return { paragraphs, sentences, edits, rawParagraphs };
 	}
 
 	private async parseExistingEdits(content: string): Promise<SentenceEdit[]> {
@@ -112,8 +121,8 @@ export class TelescopeOverlay {
 	private controlsEl: HTMLElement;
 	private currentZoom: ZoomLevel = 'document';
 	currentDocument: any = null;
-	private plugin: FornaxPlugin;
-	private isInternalUpdate: boolean = false;
+	plugin: FornaxPlugin;
+	isInternalUpdate: boolean = false;
 
 	constructor(container: HTMLElement, plugin: FornaxPlugin) {
 		this.container = container;
@@ -461,6 +470,12 @@ export class TelescopeOverlay {
 			const draggedParagraph = this.currentDocument.paragraphs.splice(draggedIndex, 1)[0];
 			const draggedSentences = this.currentDocument.sentences.splice(draggedIndex, 1)[0];
 			
+			// IMPORTANT: Also move the raw paragraph to preserve sentence blocks with comments
+			let draggedRawParagraph;
+			if (this.currentDocument.rawParagraphs) {
+				draggedRawParagraph = this.currentDocument.rawParagraphs.splice(draggedIndex, 1)[0];
+			}
+			
 			// Calculate the insertion index
 			let insertIndex = dropIndex;
 			
@@ -478,33 +493,61 @@ export class TelescopeOverlay {
 			this.currentDocument.paragraphs.splice(insertIndex, 0, draggedParagraph);
 			this.currentDocument.sentences.splice(insertIndex, 0, draggedSentences);
 			
+			// Also insert the raw paragraph with comments
+			if (this.currentDocument.rawParagraphs && draggedRawParagraph) {
+				this.currentDocument.rawParagraphs.splice(insertIndex, 0, draggedRawParagraph);
+			}
+			
 		} else {
+			// Moving sentence blocks between paragraphs
 			const draggedParaIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
 			const draggedSentIndex = parseInt(draggedElement.getAttribute('data-sent-index') || '0');
 			const dropParaIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
 			const dropSentIndex = parseInt(dropTarget.getAttribute('data-sent-index') || '0');
 			
-			// Remove the dragged sentence
-			const draggedSentence = this.currentDocument.sentences[draggedParaIndex].splice(draggedSentIndex, 1)[0];
-			
-			// Calculate insertion index
-			let insertIndex = dropSentIndex;
-			
-			// Adjust for removal if within same paragraph and dragged was before drop target
-			if (draggedParaIndex === dropParaIndex && draggedSentIndex < dropSentIndex) {
-				insertIndex = dropSentIndex - 1;
+			// Extract the entire sentence block (sentence + comments) from raw paragraphs
+			if (this.currentDocument.rawParagraphs) {
+				if (draggedParaIndex === dropParaIndex) {
+					// Moving within the same paragraph - handle as single operation
+					const paragraph = this.currentDocument.rawParagraphs[draggedParaIndex];
+					const updatedParagraph = this.moveSentenceBlockWithinParagraph(
+						paragraph, 
+						draggedSentIndex, 
+						dropSentIndex, 
+						position
+					);
+					this.currentDocument.rawParagraphs[draggedParaIndex] = updatedParagraph;
+				} else {
+					// Moving between different paragraphs
+					const sourceParagraph = this.currentDocument.rawParagraphs[draggedParaIndex];
+					const targetParagraph = this.currentDocument.rawParagraphs[dropParaIndex];
+					
+					const extractedBlock = this.extractSentenceBlock(sourceParagraph, draggedSentIndex);
+					const updatedSourceParagraph = this.removeSentenceBlock(sourceParagraph, draggedSentIndex);
+					const updatedTargetParagraph = this.insertSentenceBlock(targetParagraph, dropSentIndex, extractedBlock, position);
+					
+					// Update the raw paragraphs
+					this.currentDocument.rawParagraphs[draggedParaIndex] = updatedSourceParagraph;
+					this.currentDocument.rawParagraphs[dropParaIndex] = updatedTargetParagraph;
+				}
+				
+				// Re-parse the updated content to sync clean data structures
+				this.syncFromRawParagraphs();
+			} else {
+				// Fallback: simple sentence moving without comment preservation
+				const draggedSentence = this.currentDocument.sentences[draggedParaIndex].splice(draggedSentIndex, 1)[0];
+				
+				let insertIndex = dropSentIndex;
+				if (draggedParaIndex === dropParaIndex && draggedSentIndex < dropSentIndex) {
+					insertIndex = dropSentIndex - 1;
+				}
+				if (position === 'after') {
+					insertIndex += 1;
+				}
+				
+				this.currentDocument.sentences[dropParaIndex].splice(insertIndex, 0, draggedSentence);
+				this.updateParagraphsFromSentences();
 			}
-			
-			// Adjust for before/after position
-			if (position === 'after') {
-				insertIndex += 1;
-			}
-			
-			// Insert at the new position
-			this.currentDocument.sentences[dropParaIndex].splice(insertIndex, 0, draggedSentence);
-			
-			// Update the paragraph content in the data model
-			this.updateParagraphsFromSentences();
 		}
 		
 		// Save changes to the actual file
@@ -519,6 +562,173 @@ export class TelescopeOverlay {
 		this.currentDocument.paragraphs = this.currentDocument.sentences.map((sentenceArray: string[]) => 
 			sentenceArray.join(' ')
 		);
+	}
+
+	private extractSentenceBlock(paragraph: string, sentenceIndex: number): string[] {
+		// Extract a sentence and all its comments as a block
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+		
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentenceIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+		
+		if (sentenceLineIndex === -1) return [];
+		
+		// Extract the sentence and its following comments
+		const block = [lines[sentenceLineIndex]];
+		
+		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line.startsWith('%%') && line.endsWith('%%')) {
+				block.push(lines[i]);
+			} else if (line) {
+				// Hit next sentence, stop
+				break;
+			} else {
+				// Empty line, include it
+				block.push(lines[i]);
+			}
+		}
+		
+		return block;
+	}
+
+	private removeSentenceBlock(paragraph: string, sentenceIndex: number): string {
+		// Remove a sentence block from a paragraph
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+		
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentenceIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+		
+		if (sentenceLineIndex === -1) return paragraph;
+		
+		// Remove the sentence and its following comments
+		const newLines = [...lines];
+		let removeCount = 1; // Start with the sentence itself
+		
+		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line.startsWith('%%') && line.endsWith('%%')) {
+				removeCount++;
+			} else if (line) {
+				// Hit next sentence, stop
+				break;
+			} else {
+				// Empty line, include in removal
+				removeCount++;
+			}
+		}
+		
+		newLines.splice(sentenceLineIndex, removeCount);
+		return newLines.join('\n');
+	}
+
+	private insertSentenceBlock(paragraph: string, targetSentenceIndex: number, block: string[], position: 'before' | 'after'): string {
+		// Insert a sentence block into a paragraph
+		const lines = paragraph.split('\n');
+		let insertLineIndex = 0;
+		let nonCommentLineCount = 0;
+		
+		// Find the target sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === targetSentenceIndex) {
+					insertLineIndex = i;
+					
+					// If position is 'after', find the end of this sentence block
+					if (position === 'after') {
+						let j = i + 1;
+						// Skip past all comments belonging to this sentence
+						while (j < lines.length) {
+							const nextLine = lines[j].trim();
+							if (nextLine.startsWith('%%') && nextLine.endsWith('%%')) {
+								j++;
+							} else if (nextLine) {
+								// Hit next sentence, stop here
+								break;
+							} else {
+								// Empty line, skip it
+								j++;
+							}
+						}
+						insertLineIndex = j;
+					}
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+		
+		// Insert the block
+		const newLines = [...lines];
+		newLines.splice(insertLineIndex, 0, ...block);
+		return newLines.join('\n');
+	}
+
+	private syncFromRawParagraphs() {
+		// Re-parse the raw paragraphs to sync clean data structures
+		if (!this.currentDocument.rawParagraphs) return;
+		
+		const sentences = this.currentDocument.rawParagraphs.map((para: string) => {
+			const lines = para.split('\n');
+			return lines.filter((line: string) => {
+				const trimmed = line.trim();
+				return trimmed && !(trimmed.startsWith('%%') && trimmed.endsWith('%%'));
+			});
+		});
+
+		const paragraphs = sentences.map((sentenceArray: string[]) => sentenceArray.join('\n'));
+		
+		this.currentDocument.sentences = sentences;
+		this.currentDocument.paragraphs = paragraphs;
+	}
+
+	private moveSentenceBlockWithinParagraph(
+		paragraph: string, 
+		fromIndex: number, 
+		toIndex: number, 
+		position: 'before' | 'after'
+	): string {
+		// Handle moving a sentence block within the same paragraph without duplication
+		const lines = paragraph.split('\n');
+		
+		// Extract the sentence block to move
+		const extractedBlock = this.extractSentenceBlock(paragraph, fromIndex);
+		if (extractedBlock.length === 0) return paragraph;
+		
+		// Remove the original block
+		const withoutSource = this.removeSentenceBlock(paragraph, fromIndex);
+		
+		// Adjust target index if the source was before the target
+		let adjustedToIndex = toIndex;
+		if (fromIndex < toIndex) {
+			adjustedToIndex = toIndex - 1;
+		}
+		
+		// Insert at the adjusted position
+		return this.insertSentenceBlock(withoutSource, adjustedToIndex, extractedBlock, position);
 	}
 
 	async saveChangesToFile() {
@@ -536,9 +746,18 @@ export class TelescopeOverlay {
 		await this.plugin.app.vault.modify(currentFile, newContent);
 	}
 
-	private reconstructMarkdown(): string {
-		// Join paragraphs with double newlines to recreate markdown structure
-		return this.currentDocument.paragraphs.join('\n\n');
+	reconstructMarkdown(): string {
+		// Use raw paragraphs if available to preserve comments, otherwise fall back to clean reconstruction
+		if (this.currentDocument.rawParagraphs) {
+			return this.currentDocument.rawParagraphs.join('\n\n');
+		}
+		
+		// Fallback: reconstruct from clean sentences (for backwards compatibility)
+		const paragraphsWithLines = this.currentDocument.sentences.map((sentenceArray: string[]) => {
+			return sentenceArray.join('\n');
+		});
+		
+		return paragraphsWithLines.join('\n\n');
 	}
 
 	private openSentenceEditor(paraIndex: number, sentIndex: number, sentence: string) {
@@ -778,13 +997,13 @@ class SentenceEditModal extends Modal {
 		this.paraIndex = paraIndex;
 		this.sentIndex = sentIndex;
 		this.overlay = overlay;
-		
-		// Load existing alternatives if any
-		this.loadExistingAlternatives();
 	}
 
-	onOpen() {
+	async onOpen() {
 		const { contentEl } = this;
+
+		// Load existing alternatives first
+		await this.loadExistingAlternatives();
 
 		contentEl.createEl('h2', { text: 'Edit Sentence' });
 
@@ -835,18 +1054,102 @@ class SentenceEditModal extends Modal {
 
 		const saveBtn = buttonContainer.createEl('button', { 
 			cls: 'mod-cta',
-			text: 'Save & Use Selected' 
+			text: 'Save Selection' 
 		});
 		saveBtn.onclick = () => this.saveAndApply();
+
+		const commitBtn = buttonContainer.createEl('button', { 
+			cls: 'fornax-commit-btn',
+			text: 'Commit (Final)' 
+		});
+		commitBtn.onclick = () => this.commitSelectedAlternative();
 
 		// Add CSS for the modal
 		this.addModalStyles();
 	}
 
-	private loadExistingAlternatives() {
-		// TODO: Load alternatives from storage (comments or separate file)
-		// For now, start with empty alternatives
-		this.alternatives = [];
+	private async loadExistingAlternatives() {
+		// Load alternatives from %% %% comments in the document
+		const currentFile = this.overlay.plugin.app.workspace.getActiveFile();
+		if (!currentFile) {
+			console.log('No current file');
+			return;
+		}
+
+		const content = await this.overlay.plugin.app.vault.read(currentFile);
+		
+		console.log('Loading alternatives for sentence:', this.originalSentence);
+		console.log('Para/Sent index:', this.paraIndex, this.sentIndex);
+		
+		// Find the sentence location in the document and look for %% %% comments below it
+		const paragraphs = content.split('\n\n');
+		if (this.paraIndex < paragraphs.length) {
+			const paragraph = paragraphs[this.paraIndex];
+			const lines = paragraph.split('\n');
+			
+			// Find alternatives after our sentence
+			let sentenceLineIndex = -1;
+			let nonCommentLineCount = 0;
+			
+			for (let i = 0; i < lines.length; i++) {
+				const line = lines[i].trim();
+				if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+					if (nonCommentLineCount === this.sentIndex) {
+						sentenceLineIndex = i;
+						break;
+					}
+					nonCommentLineCount++;
+				}
+			}
+			
+			if (sentenceLineIndex !== -1) {
+				// Look for alternatives and original immediately following the sentence
+				this.alternatives = [];
+				let selectedIndex = -1;
+				let foundOriginal = null;
+				
+				// Check if the current top sentence is actually a selected alternative
+				// by looking for ORIGINAL comment below it
+				const currentSentence = lines[sentenceLineIndex].trim();
+				
+				for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+					const line = lines[i].trim();
+					if (line.startsWith('%%') && line.endsWith('%%')) {
+						const commentContent = line.slice(2, -2).trim();
+						if (commentContent.startsWith('SELECTED:')) {
+							selectedIndex = parseInt(commentContent.split(':')[1]);
+						} else if (commentContent.startsWith('ORIGINAL:')) {
+							foundOriginal = commentContent.slice(9).trim(); // Remove "ORIGINAL: "
+						} else {
+							this.alternatives.push(commentContent);
+						}
+					} else if (line) {
+						// Hit next sentence, stop looking
+						break;
+					}
+				}
+				
+				// If we found an ORIGINAL comment, that means the current sentence is a selected alternative
+				if (foundOriginal) {
+					// The true original is in the comment, current sentence is the selected alternative
+					this.originalSentence = foundOriginal;
+					// Add the currently visible sentence to alternatives if it's not already there
+					if (!this.alternatives.includes(currentSentence)) {
+						this.alternatives.unshift(currentSentence); // Add to beginning
+						// Adjust selected index since we added at beginning
+						if (selectedIndex >= 0) {
+							selectedIndex = 0; // The visible sentence is now index 0
+						}
+					}
+				}
+				// If no ORIGINAL found, the current sentence IS the original
+				
+				this.currentAltIndex = selectedIndex;
+				console.log('True original sentence:', this.originalSentence);
+				console.log('Loaded alternatives:', this.alternatives);
+				console.log('Selected index:', this.currentAltIndex);
+			}
+		}
 	}
 
 	private renderAlternatives() {
@@ -906,35 +1209,212 @@ class SentenceEditModal extends Modal {
 	}
 
 	private async saveAndApply() {
-		// Get the selected sentence
-		let selectedSentence: string;
-		if (this.currentAltIndex === -1) {
-			selectedSentence = this.originalSentence;
-		} else {
-			selectedSentence = this.alternatives[this.currentAltIndex];
-		}
+		// DON'T update the actual sentence content - keep original as original
+		// Only save which alternative is selected as a comment
+		// The UI will show the selected alternative, but the file keeps the original
 
-		// Update the sentence in the data model
-		this.overlay.currentDocument.sentences[this.paraIndex][this.sentIndex] = selectedSentence;
+		console.log('Saving selection (not replacing original)');
+		console.log('Selected index:', this.currentAltIndex);
+
+		// Save alternatives and selection to %% %% comments
+		await this.saveDocumentWithAlternatives();
 		
-		// Update paragraphs from sentences
-		this.overlay.currentDocument.paragraphs[this.paraIndex] = 
-			this.overlay.currentDocument.sentences[this.paraIndex].join(' ');
-
-		// Save alternatives for future use
-		await this.saveAlternatives();
-
-		// Save to file and re-render
-		await this.overlay.saveChangesToFile();
+		// Re-render to show the visual selection (but original stays in file)
 		this.overlay.renderCurrentZoom();
 
 		this.close();
 	}
 
+	private async commitSelectedAlternative() {
+		// This permanently replaces the original with the selected alternative
+		// and removes all the %% %% comments
+		
+		let finalSentence: string;
+		if (this.currentAltIndex === -1) {
+			finalSentence = this.originalSentence;
+		} else {
+			finalSentence = this.alternatives[this.currentAltIndex];
+		}
+
+		console.log('Committing final sentence:', finalSentence);
+
+		// Update the actual sentence in the data model
+		this.overlay.currentDocument.sentences[this.paraIndex][this.sentIndex] = finalSentence;
+
+		// Remove all alternatives and commit the final version to file
+		await this.commitToFile(finalSentence);
+		
+		this.overlay.renderCurrentZoom();
+		this.close();
+	}
+
+	private async commitToFile(finalSentence: string) {
+		const currentFile = this.overlay.plugin.app.workspace.getActiveFile();
+		if (!currentFile) return;
+
+		const content = await this.overlay.plugin.app.vault.read(currentFile);
+		let paragraphs = content.split('\n\n');
+		
+		if (this.paraIndex < paragraphs.length) {
+			let paragraph = paragraphs[this.paraIndex];
+			let lines = paragraph.split('\n');
+			
+			// Remove all alternatives and replace the original sentence
+			let sentenceLineIndex = -1;
+			let nonCommentLineCount = 0;
+			let cleanLines: string[] = [];
+			
+			for (let i = 0; i < lines.length; i++) {
+				const line = lines[i].trim();
+				if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+					if (nonCommentLineCount === this.sentIndex) {
+						cleanLines.push(finalSentence); // Replace with final sentence
+					} else {
+						cleanLines.push(lines[i]);
+					}
+					nonCommentLineCount++;
+				}
+			}
+			
+			paragraphs[this.paraIndex] = cleanLines.join('\n');
+		}
+		
+		const finalContent = paragraphs.join('\n\n');
+		
+		console.log('Committing to file...');
+		
+		this.overlay.isInternalUpdate = true;
+		await this.overlay.plugin.app.vault.modify(currentFile, finalContent);
+		
+		console.log('Commit completed');
+	}
+
+	private async saveDocumentWithAlternatives() {
+		const currentFile = this.overlay.plugin.app.workspace.getActiveFile();
+		if (!currentFile) {
+			console.log('No current file for saving');
+			return;
+		}
+
+		console.log('Saving document with alternatives...');
+		console.log('Alternatives to save:', this.alternatives);
+		console.log('Selected index:', this.currentAltIndex);
+
+		const content = await this.overlay.plugin.app.vault.read(currentFile);
+		let paragraphs = content.split('\n\n');
+		
+		if (this.paraIndex < paragraphs.length) {
+			let paragraph = paragraphs[this.paraIndex];
+			let lines = paragraph.split('\n');
+			
+			// Find the sentence line and remove any existing alternatives
+			let sentenceLineIndex = -1;
+			let nonCommentLineCount = 0;
+			let cleanLines: string[] = [];
+			
+			for (let i = 0; i < lines.length; i++) {
+				const line = lines[i].trim();
+				if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+					cleanLines.push(lines[i]);
+					if (nonCommentLineCount === this.sentIndex) {
+						sentenceLineIndex = cleanLines.length - 1;
+					}
+					nonCommentLineCount++;
+				}
+			}
+			
+			// Rebuild paragraph with selected alternative on top
+			let newLines: string[] = [];
+			
+			for (let i = 0; i < cleanLines.length; i++) {
+				// Handle our target sentence differently
+				if (i === sentenceLineIndex) {
+					// If an alternative is selected, put it on top and move original to comment
+					if (this.currentAltIndex >= 0 && this.currentAltIndex < this.alternatives.length) {
+						// Selected alternative becomes the visible sentence
+						newLines.push(this.alternatives[this.currentAltIndex]);
+						// Original becomes a comment
+						newLines.push(`%% ORIGINAL: ${this.originalSentence} %%`);
+						// Add other alternatives as comments
+						this.alternatives.forEach((alt, index) => {
+							if (index !== this.currentAltIndex) {
+								newLines.push(`%% ${alt} %%`);
+							}
+						});
+						// Add selected marker
+						newLines.push(`%% SELECTED:${this.currentAltIndex} %%`);
+					} else {
+						// Original is selected (currentAltIndex === -1)
+						// Put original back on top, no ORIGINAL comment needed
+						newLines.push(this.originalSentence);
+						// Add all alternatives as comments
+						this.alternatives.forEach(alt => {
+							newLines.push(`%% ${alt} %%`);
+						});
+						// No SELECTED marker when original is selected
+					}
+				} else {
+					// Regular sentence, keep as is
+					newLines.push(cleanLines[i]);
+				}
+			}
+			
+			paragraphs[this.paraIndex] = newLines.join('\n');
+		}
+		
+		const finalContent = paragraphs.join('\n\n');
+		
+		console.log('Saving to file...');
+		
+		// Save the updated content
+		this.overlay.isInternalUpdate = true;
+		await this.overlay.plugin.app.vault.modify(currentFile, finalContent);
+		
+		console.log('Save completed');
+	}
+
 	private async saveAlternatives() {
-		// TODO: Implement saving alternatives as comments or separate file
-		// For now, just store in memory
-		console.log('Saving alternatives:', this.alternatives);
+		const currentFile = this.overlay.plugin.app.workspace.getActiveFile();
+		if (!currentFile) {
+			console.log('No current file for saving');
+			return;
+		}
+
+		console.log('Saving alternatives...');
+		console.log('Alternatives to save:', this.alternatives);
+		console.log('Selected index:', this.currentAltIndex);
+
+		const content = await this.overlay.plugin.app.vault.read(currentFile);
+		const editId = `${this.paraIndex}-${this.sentIndex}`;
+		
+		// Create the alternatives data
+		const alternativesData = {
+			alternatives: this.alternatives,
+			selected: this.currentAltIndex,
+			original: this.originalSentence
+		};
+		
+		const commentText = `<!-- FORNAX_ALTERNATIVES:${editId}:${JSON.stringify(alternativesData)} -->`;
+		console.log('Comment to add:', commentText);
+		
+		// Remove any existing alternatives comment for this sentence
+		const existingCommentRegex = new RegExp(`<!--\\s*FORNAX_ALTERNATIVES:${editId}:.*?\\s*-->`, 'g');
+		let newContent = content.replace(existingCommentRegex, '');
+		
+		console.log('Content length before:', content.length);
+		console.log('Content length after removing existing:', newContent.length);
+		
+		// Add the new comment at the end of the document
+		newContent += '\n' + commentText;
+		
+		console.log('Final content length:', newContent.length);
+		console.log('Saving to file...');
+		
+		// Save the updated content
+		this.overlay.isInternalUpdate = true;
+		await this.overlay.plugin.app.vault.modify(currentFile, newContent);
+		
+		console.log('Save completed');
 	}
 
 	private addModalStyles() {
@@ -1035,6 +1515,13 @@ class SentenceEditModal extends Modal {
 					background: var(--interactive-accent);
 					color: var(--text-on-accent);
 					border-color: var(--interactive-accent);
+				}
+
+				.fornax-modal-buttons button.fornax-commit-btn {
+					background: var(--color-orange);
+					color: var(--text-on-accent);
+					border-color: var(--color-orange);
+					font-weight: bold;
 				}
 			`;
 			document.head.appendChild(style);
