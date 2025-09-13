@@ -165,12 +165,6 @@ export class TelescopeOverlay {
 			btn.onclick = () => this.setZoomLevel(level);
 		});
 
-		// Add edit mode toggle
-		const editBtn = this.controlsEl.createEl('button', { 
-			cls: 'fornax-edit-btn',
-			text: '🔧 Edit Mode'
-		});
-		editBtn.onclick = () => this.toggleEditMode();
 	}
 
 	async loadDocument(file: TFile) {
@@ -766,10 +760,6 @@ export class TelescopeOverlay {
 		modal.open();
 	}
 
-	private toggleEditMode() {
-		// TODO: Toggle between read and edit modes
-		console.log('Toggling edit mode');
-	}
 
 	private addStyles() {
 		// Add CSS styles for the telescope interface
@@ -792,7 +782,7 @@ export class TelescopeOverlay {
 					border-bottom: 1px solid var(--background-modifier-border);
 				}
 
-				.fornax-zoom-btn, .fornax-edit-btn {
+				.fornax-zoom-btn {
 					padding: 8px 16px;
 					border: 1px solid var(--background-modifier-border);
 					background: var(--background-primary);
@@ -802,7 +792,7 @@ export class TelescopeOverlay {
 					transition: all 0.2s ease;
 				}
 
-				.fornax-zoom-btn:hover, .fornax-edit-btn:hover {
+				.fornax-zoom-btn:hover {
 					background: var(--background-secondary);
 				}
 
