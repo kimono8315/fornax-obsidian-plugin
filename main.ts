@@ -243,11 +243,21 @@ export class TelescopeOverlay {
 			const para = this.currentDocument.paragraphs[i];
 			console.log('Creating paragraph', i);
 			
-			// Check if this paragraph has comments
+			// Check paragraph status for styling
 			const hasComments = this.paragraphHasComments(i);
+			const isComplete = this.paragraphIsComplete(i);
+			
+			// Determine CSS classes based on status
+			// Priority: yellow (alternatives) overrides green (complete)
+			let cssClasses = 'fornax-paragraph-block';
+			if (hasComments) {
+				cssClasses += ' fornax-has-alternatives';
+			} else if (isComplete) {
+				cssClasses += ' fornax-paragraph-complete';
+			}
 			
 			const paraBlock = paraView.createEl('div', { 
-				cls: `fornax-paragraph-block ${hasComments ? 'fornax-has-alternatives' : ''}`,
+				cls: cssClasses,
 				attr: { 'data-para-index': i.toString() }
 			});
 			
@@ -269,6 +279,17 @@ export class TelescopeOverlay {
 				cls: 'fornax-sentence-count',
 				text: `${this.currentDocument.sentences[i].length} sentences`
 			});
+
+			// Completion toggle button
+			const completionBtn = paraBlock.createEl('button', { 
+				cls: 'fornax-completion-btn',
+				text: isComplete ? '✅' : '☐'
+			});
+			completionBtn.title = isComplete ? 'Mark as incomplete' : 'Mark as complete';
+			completionBtn.onclick = (e) => {
+				e.stopPropagation(); // Prevent zoom action
+				this.toggleParagraphCompletion(i);
+			};
 
 			// Click to zoom into sentences
 			content.onclick = () => {
@@ -756,6 +777,71 @@ export class TelescopeOverlay {
 		return false;
 	}
 
+	private paragraphIsComplete(paraIndex: number): boolean {
+		// Check if a paragraph is marked as complete with PARAGRAPH_COMPLETE comment
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return false;
+		}
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		
+		// Look for PARAGRAPH_COMPLETE comment anywhere in the paragraph
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (trimmed.startsWith('%%') && trimmed.endsWith('%%')) {
+				const commentContent = trimmed.slice(2, -2).trim();
+				if (commentContent === 'PARAGRAPH_COMPLETE') {
+					return true;
+				}
+			}
+		}
+		
+		return false;
+	}
+
+	private async toggleParagraphCompletion(paraIndex: number) {
+		// Toggle the completion status of a paragraph
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return;
+		}
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let hasCompletionComment = false;
+		let newLines: string[] = [];
+
+		// Remove existing PARAGRAPH_COMPLETE comment if found
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (trimmed.startsWith('%%') && trimmed.endsWith('%%')) {
+				const commentContent = trimmed.slice(2, -2).trim();
+				if (commentContent === 'PARAGRAPH_COMPLETE') {
+					hasCompletionComment = true;
+					continue; // Skip this line (remove it)
+				}
+			}
+			newLines.push(line);
+		}
+
+		// If wasn't complete, add completion comment at the beginning
+		if (!hasCompletionComment) {
+			newLines.unshift('%% PARAGRAPH_COMPLETE %%');
+		}
+
+		// Update the raw paragraph
+		this.currentDocument.rawParagraphs[paraIndex] = newLines.join('\n');
+		
+		// Re-sync the clean data structures
+		this.syncFromRawParagraphs();
+		
+		// Save changes to file
+		await this.saveChangesToFile();
+		
+		// Re-render to show the change
+		this.renderCurrentZoom();
+	}
+
 	private moveSentenceBlockWithinParagraph(
 		paragraph: string, 
 		fromIndex: number, 
@@ -941,6 +1027,23 @@ export class TelescopeOverlay {
 					opacity: 1;
 				}
 
+				.fornax-completion-btn {
+					position: absolute;
+					bottom: 8px;
+					right: 8px;
+					background: none;
+					border: none;
+					cursor: pointer;
+					font-size: 14px;
+					opacity: 0.7;
+					transition: opacity 0.2s ease;
+					padding: 2px 4px;
+				}
+
+				.fornax-paragraph-block:hover .fornax-completion-btn {
+					opacity: 1;
+				}
+
 				.fornax-paragraph-header {
 					font-weight: 600;
 					color: var(--text-accent);
@@ -1026,6 +1129,16 @@ export class TelescopeOverlay {
 				.fornax-sentence-block.fornax-has-alternatives {
 					background: rgba(255, 235, 59, 0.2) !important;
 					border-left: 3px solid #ffc107 !important;
+				}
+
+				.fornax-paragraph-complete {
+					background: rgba(76, 175, 80, 0.1) !important;
+					border-left: 3px solid #4caf50 !important;
+				}
+
+				.fornax-paragraph-block.fornax-paragraph-complete {
+					background: rgba(76, 175, 80, 0.15) !important;
+					border-left: 3px solid #4caf50 !important;
 				}
 			`;
 			document.head.appendChild(style);
