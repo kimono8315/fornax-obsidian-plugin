@@ -1,5 +1,5 @@
 // main.ts - Complete Fornax Plugin (Consolidated)
-import { Plugin, PluginSettingTab, Setting, WorkspaceLeaf, TFile, App, ItemView, Notice } from 'obsidian';
+import { Plugin, PluginSettingTab, Setting, WorkspaceLeaf, TFile, App, ItemView, Notice, Modal } from 'obsidian';
 
 // ===============================================
 // INTERFACES AND TYPES
@@ -111,7 +111,7 @@ export class TelescopeOverlay {
 	private contentEl: HTMLElement;
 	private controlsEl: HTMLElement;
 	private currentZoom: ZoomLevel = 'document';
-	private currentDocument: any = null;
+	currentDocument: any = null;
 	private plugin: FornaxPlugin;
 	private isInternalUpdate: boolean = false;
 
@@ -190,7 +190,7 @@ export class TelescopeOverlay {
 		this.renderCurrentZoom();
 	}
 
-	private renderCurrentZoom() {
+	renderCurrentZoom() {
 		if (!this.currentDocument) return;
 
 		this.contentEl.empty();
@@ -521,7 +521,7 @@ export class TelescopeOverlay {
 		);
 	}
 
-	private async saveChangesToFile() {
+	async saveChangesToFile() {
 		// Get the current file from the plugin
 		const currentFile = this.plugin.app.workspace.getActiveFile();
 		if (!currentFile) return;
@@ -542,8 +542,9 @@ export class TelescopeOverlay {
 	}
 
 	private openSentenceEditor(paraIndex: number, sentIndex: number, sentence: string) {
-		// TODO: Open the sentence editing dialogue
-		console.log(`Opening editor for: ${sentence}`);
+		// Create modal for sentence editing
+		const modal = new SentenceEditModal(this.plugin.app, sentence, paraIndex, sentIndex, this);
+		modal.open();
 	}
 
 	private toggleEditMode() {
@@ -753,6 +754,295 @@ export class TelescopeOverlay {
 	destroy() {
 		// Cleanup
 		const style = document.getElementById('fornax-styles');
+		if (style) style.remove();
+	}
+}
+
+// ===============================================
+// SENTENCE EDIT MODAL CLASS
+// (Will be: sentence-edit-modal.ts)
+// ===============================================
+
+class SentenceEditModal extends Modal {
+	private originalSentence: string;
+	private paraIndex: number;
+	private sentIndex: number;
+	private overlay: TelescopeOverlay;
+	private alternatives: string[] = [];
+	private currentAltIndex: number = -1; // -1 means original
+	private alternativesContainer: HTMLElement;
+
+	constructor(app: App, sentence: string, paraIndex: number, sentIndex: number, overlay: TelescopeOverlay) {
+		super(app);
+		this.originalSentence = sentence;
+		this.paraIndex = paraIndex;
+		this.sentIndex = sentIndex;
+		this.overlay = overlay;
+		
+		// Load existing alternatives if any
+		this.loadExistingAlternatives();
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+
+		contentEl.createEl('h2', { text: 'Edit Sentence' });
+
+		// Original sentence display
+		const originalContainer = contentEl.createEl('div', { cls: 'fornax-sentence-original' });
+		originalContainer.createEl('h3', { text: 'Original:' });
+		const originalText = originalContainer.createEl('div', { 
+			cls: 'fornax-original-text',
+			text: this.originalSentence 
+		});
+
+		// Current editing area
+		const editContainer = contentEl.createEl('div', { cls: 'fornax-sentence-edit' });
+		editContainer.createEl('h3', { text: 'New Alternative:' });
+		
+		const textArea = editContainer.createEl('textarea', { 
+			cls: 'fornax-sentence-input',
+			attr: { 
+				placeholder: 'Write an alternative version of this sentence...',
+				rows: '3'
+			}
+		});
+
+		const addBtn = editContainer.createEl('button', { 
+			cls: 'fornax-add-alternative',
+			text: '+ Add Alternative' 
+		});
+
+		addBtn.onclick = () => {
+			const newAlt = textArea.value.trim();
+			if (newAlt && newAlt !== this.originalSentence) {
+				this.alternatives.push(newAlt);
+				this.renderAlternatives();
+				textArea.value = '';
+			}
+		};
+
+		// Alternatives display
+		this.alternativesContainer = contentEl.createEl('div', { cls: 'fornax-alternatives' });
+		this.alternativesContainer.createEl('h3', { text: 'Alternatives:' });
+		this.renderAlternatives();
+
+		// Action buttons
+		const buttonContainer = contentEl.createEl('div', { cls: 'fornax-modal-buttons' });
+		
+		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
+		cancelBtn.onclick = () => this.close();
+
+		const saveBtn = buttonContainer.createEl('button', { 
+			cls: 'mod-cta',
+			text: 'Save & Use Selected' 
+		});
+		saveBtn.onclick = () => this.saveAndApply();
+
+		// Add CSS for the modal
+		this.addModalStyles();
+	}
+
+	private loadExistingAlternatives() {
+		// TODO: Load alternatives from storage (comments or separate file)
+		// For now, start with empty alternatives
+		this.alternatives = [];
+	}
+
+	private renderAlternatives() {
+		// Clear existing alternatives display
+		const existingAlts = this.alternativesContainer.querySelectorAll('.fornax-alternative-item');
+		existingAlts.forEach(alt => alt.remove());
+
+		// Add original as first option
+		this.addAlternativeItem(this.originalSentence, -1, true);
+
+		// Add each alternative
+		this.alternatives.forEach((alt, index) => {
+			this.addAlternativeItem(alt, index, false);
+		});
+	}
+
+	private addAlternativeItem(text: string, index: number, isOriginal: boolean) {
+		const altItem = this.alternativesContainer.createEl('div', { 
+			cls: `fornax-alternative-item ${this.currentAltIndex === index ? 'active' : ''}` 
+		});
+
+		const radio = altItem.createEl('input', { 
+			type: 'radio',
+			attr: { name: 'sentence-alternative', value: index.toString() }
+		});
+		
+		if (this.currentAltIndex === index) {
+			radio.checked = true;
+		}
+
+		radio.onchange = () => {
+			this.currentAltIndex = index;
+			this.renderAlternatives();
+		};
+
+		const textSpan = altItem.createEl('span', { 
+			cls: 'fornax-alt-text',
+			text: isOriginal ? `${text} (original)` : text 
+		});
+
+		if (!isOriginal) {
+			const deleteBtn = altItem.createEl('button', { 
+				cls: 'fornax-delete-alt',
+				text: '×' 
+			});
+			deleteBtn.onclick = (e) => {
+				e.stopPropagation();
+				this.alternatives.splice(index, 1);
+				if (this.currentAltIndex === index) {
+					this.currentAltIndex = -1; // Reset to original
+				} else if (this.currentAltIndex > index) {
+					this.currentAltIndex--; // Adjust index
+				}
+				this.renderAlternatives();
+			};
+		}
+	}
+
+	private async saveAndApply() {
+		// Get the selected sentence
+		let selectedSentence: string;
+		if (this.currentAltIndex === -1) {
+			selectedSentence = this.originalSentence;
+		} else {
+			selectedSentence = this.alternatives[this.currentAltIndex];
+		}
+
+		// Update the sentence in the data model
+		this.overlay.currentDocument.sentences[this.paraIndex][this.sentIndex] = selectedSentence;
+		
+		// Update paragraphs from sentences
+		this.overlay.currentDocument.paragraphs[this.paraIndex] = 
+			this.overlay.currentDocument.sentences[this.paraIndex].join(' ');
+
+		// Save alternatives for future use
+		await this.saveAlternatives();
+
+		// Save to file and re-render
+		await this.overlay.saveChangesToFile();
+		this.overlay.renderCurrentZoom();
+
+		this.close();
+	}
+
+	private async saveAlternatives() {
+		// TODO: Implement saving alternatives as comments or separate file
+		// For now, just store in memory
+		console.log('Saving alternatives:', this.alternatives);
+	}
+
+	private addModalStyles() {
+		if (!document.getElementById('fornax-modal-styles')) {
+			const style = document.createElement('style');
+			style.id = 'fornax-modal-styles';
+			style.textContent = `
+				.fornax-sentence-original {
+					margin-bottom: 16px;
+					padding: 12px;
+					background: var(--background-secondary);
+					border-radius: 6px;
+				}
+
+				.fornax-original-text {
+					font-style: italic;
+					color: var(--text-muted);
+					margin-top: 8px;
+				}
+
+				.fornax-sentence-edit {
+					margin-bottom: 16px;
+				}
+
+				.fornax-sentence-input {
+					width: 100%;
+					min-height: 60px;
+					margin: 8px 0;
+					padding: 8px;
+					border: 1px solid var(--background-modifier-border);
+					border-radius: 4px;
+					font-family: var(--font-text);
+					resize: vertical;
+				}
+
+				.fornax-add-alternative {
+					background: var(--interactive-accent);
+					color: var(--text-on-accent);
+					border: none;
+					padding: 8px 16px;
+					border-radius: 4px;
+					cursor: pointer;
+				}
+
+				.fornax-alternatives {
+					margin-bottom: 16px;
+				}
+
+				.fornax-alternative-item {
+					display: flex;
+					align-items: center;
+					gap: 8px;
+					padding: 8px;
+					margin: 4px 0;
+					border-radius: 4px;
+					border: 1px solid transparent;
+				}
+
+				.fornax-alternative-item.active {
+					background: var(--interactive-accent-hover);
+					border-color: var(--interactive-accent);
+				}
+
+				.fornax-alt-text {
+					flex: 1;
+					line-height: 1.4;
+				}
+
+				.fornax-delete-alt {
+					background: var(--background-modifier-error);
+					color: var(--text-on-accent);
+					border: none;
+					border-radius: 50%;
+					width: 20px;
+					height: 20px;
+					cursor: pointer;
+					font-size: 14px;
+					line-height: 1;
+				}
+
+				.fornax-modal-buttons {
+					display: flex;
+					gap: 8px;
+					justify-content: flex-end;
+					margin-top: 20px;
+				}
+
+				.fornax-modal-buttons button {
+					padding: 8px 16px;
+					border-radius: 4px;
+					border: 1px solid var(--background-modifier-border);
+					background: var(--background-primary);
+					color: var(--text-normal);
+					cursor: pointer;
+				}
+
+				.fornax-modal-buttons button.mod-cta {
+					background: var(--interactive-accent);
+					color: var(--text-on-accent);
+					border-color: var(--interactive-accent);
+				}
+			`;
+			document.head.appendChild(style);
+		}
+	}
+
+	onClose() {
+		const style = document.getElementById('fornax-modal-styles');
 		if (style) style.remove();
 	}
 }
