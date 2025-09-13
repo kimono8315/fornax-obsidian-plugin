@@ -280,7 +280,13 @@ export class TelescopeOverlay {
 
 		// Document overview with paragraph count and structure
 		const overview = docView.createEl('div', { cls: 'fornax-overview' });
-		overview.createEl('h3', { text: 'Document Structure' });
+
+		// Extract and display the first-level heading as document title
+		const documentTitle = this.getDocumentTitle();
+		overview.createEl('h3', {
+			text: documentTitle,
+			cls: 'fornax-document-title'
+		});
 
 		const stats = overview.createEl('div', { cls: 'fornax-stats' });
 
@@ -469,6 +475,33 @@ export class TelescopeOverlay {
 				this.makeDraggable(paraBlock, 'paragraph');
 			}
 		}
+	}
+
+	private getDocumentTitle(): string {
+		// Extract the first-level heading (# title) as document title
+		// If no first-level heading found, return default title
+
+		// Check paragraphs for first-level heading
+		for (const paragraph of this.currentDocument.paragraphs) {
+			const trimmed = paragraph.trim();
+			if (trimmed.startsWith('# ') && !trimmed.startsWith('##')) {
+				// Extract text after "# " and clean it up
+				return trimmed.slice(2).trim() || 'Document';
+			}
+		}
+
+		// Check sentences as fallback
+		for (const sentenceArray of this.currentDocument.sentences) {
+			for (const sentence of sentenceArray) {
+				const trimmed = sentence.trim();
+				if (trimmed.startsWith('# ') && !trimmed.startsWith('##')) {
+					return trimmed.slice(2).trim() || 'Document';
+				}
+			}
+		}
+
+		// Default if no first-level heading found
+		return 'Document Structure';
 	}
 
 	private getParagraphDisplayNumber(paragraphIndex: number): number {
@@ -1809,6 +1842,15 @@ export class TelescopeOverlay {
 
 				.fornax-overview {
 					margin-bottom: 24px;
+				}
+
+				.fornax-document-title {
+					color: var(--text-accent);
+					font-size: 1.5em;
+					font-weight: 600;
+					margin-bottom: 8px;
+					border-bottom: 2px solid var(--text-accent);
+					padding-bottom: 8px;
 				}
 
 				.fornax-stats {
