@@ -328,11 +328,13 @@ export class TelescopeOverlay {
 		let isDragging = false;
 		let startY = 0;
 		let startTop = 0;
+		let draggedElement: HTMLElement | null = null;
 
 		const handle = element.querySelector('.fornax-drag-handle') as HTMLElement;
 		
 		const handleMouseDown = (e: MouseEvent) => {
 			isDragging = true;
+			draggedElement = element;
 			startY = e.clientY;
 			startTop = element.offsetTop;
 			element.addClass('dragging');
@@ -343,27 +345,124 @@ export class TelescopeOverlay {
 		};
 
 		const handleMouseMove = (e: MouseEvent) => {
-			if (!isDragging) return;
+			if (!isDragging || !draggedElement) return;
 			
 			const deltaY = e.clientY - startY;
-			element.style.transform = `translateY(${deltaY}px)`;
+			draggedElement.style.transform = `translateY(${deltaY}px)`;
+			
+			// Highlight potential drop targets
+			this.updateDropTargets(e, draggedElement, type);
 		};
 
-		const handleMouseUp = () => {
-			if (!isDragging) return;
+		const handleMouseUp = (e: MouseEvent) => {
+			if (!isDragging || !draggedElement) return;
+			
+			// Find the drop target
+			const dropTarget = this.findDropTarget(e, draggedElement, type);
 			
 			isDragging = false;
-			element.removeClass('dragging');
-			element.style.transform = '';
+			draggedElement.removeClass('dragging');
+			draggedElement.style.transform = '';
 			document.body.style.cursor = '';
 			
-			// TODO: Handle drop logic - reorder paragraphs/sentences
+			// Clear drop target highlights
+			this.clearDropTargets(type);
+			
+			// Perform the swap if we have a valid drop target
+			if (dropTarget && dropTarget !== draggedElement) {
+				this.swapElements(draggedElement, dropTarget, type);
+			}
+			
+			draggedElement = null;
 		};
 
 		// Use addEventListener instead of direct assignment to avoid conflicts
 		handle.addEventListener('mousedown', handleMouseDown);
 		document.addEventListener('mousemove', handleMouseMove);
 		document.addEventListener('mouseup', handleMouseUp);
+	}
+
+	private updateDropTargets(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence') {
+		// Clear existing highlights
+		this.clearDropTargets(type);
+		
+		// Find all potential drop targets
+		const targets = this.contentEl.querySelectorAll(
+			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
+		);
+		
+		targets.forEach(target => {
+			if (target === draggedElement) return;
+			
+			const rect = target.getBoundingClientRect();
+			const mouseY = e.clientY;
+			
+			// Check if mouse is over this target
+			if (mouseY >= rect.top && mouseY <= rect.bottom) {
+				target.addClass('fornax-drop-target');
+			}
+		});
+	}
+
+	private findDropTarget(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence'): HTMLElement | null {
+		const targets = this.contentEl.querySelectorAll(
+			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
+		);
+		
+		for (const target of targets) {
+			if (target === draggedElement) continue;
+			
+			const rect = target.getBoundingClientRect();
+			const mouseY = e.clientY;
+			
+			if (mouseY >= rect.top && mouseY <= rect.bottom) {
+				return target as HTMLElement;
+			}
+		}
+		
+		return null;
+	}
+
+	private clearDropTargets(type: 'paragraph' | 'sentence') {
+		const targets = this.contentEl.querySelectorAll(
+			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
+		);
+		
+		targets.forEach(target => {
+			target.removeClass('fornax-drop-target');
+		});
+	}
+
+	private swapElements(draggedElement: HTMLElement, dropTarget: HTMLElement, type: 'paragraph' | 'sentence') {
+		if (type === 'paragraph') {
+			const draggedIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
+			const dropIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
+			
+			// Swap paragraphs in the data model
+			const temp = this.currentDocument.paragraphs[draggedIndex];
+			this.currentDocument.paragraphs[draggedIndex] = this.currentDocument.paragraphs[dropIndex];
+			this.currentDocument.paragraphs[dropIndex] = temp;
+			
+			// Also swap sentences arrays
+			const tempSentences = this.currentDocument.sentences[draggedIndex];
+			this.currentDocument.sentences[draggedIndex] = this.currentDocument.sentences[dropIndex];
+			this.currentDocument.sentences[dropIndex] = tempSentences;
+			
+		} else {
+			const draggedParaIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
+			const draggedSentIndex = parseInt(draggedElement.getAttribute('data-sent-index') || '0');
+			const dropParaIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
+			const dropSentIndex = parseInt(dropTarget.getAttribute('data-sent-index') || '0');
+			
+			// Swap sentences in the data model
+			const temp = this.currentDocument.sentences[draggedParaIndex][draggedSentIndex];
+			this.currentDocument.sentences[draggedParaIndex][draggedSentIndex] = 
+				this.currentDocument.sentences[dropParaIndex][dropSentIndex];
+			this.currentDocument.sentences[dropParaIndex][dropSentIndex] = temp;
+		}
+		
+		// Re-render the current view to reflect the changes
+		this.renderCurrentZoom();
 	}
 
 	private openSentenceEditor(paraIndex: number, sentIndex: number, sentence: string) {
@@ -555,6 +654,12 @@ export class TelescopeOverlay {
 					z-index: 1000;
 					box-shadow: 0 4px 16px var(--background-modifier-box-shadow) !important;
 					transform: rotate(2deg);
+				}
+
+				.fornax-drop-target {
+					border-color: var(--interactive-accent) !important;
+					background: var(--interactive-accent-hover) !important;
+					transform: scale(1.02);
 				}
 			`;
 			document.head.appendChild(style);
