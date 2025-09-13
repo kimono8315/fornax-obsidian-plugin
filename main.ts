@@ -113,6 +113,7 @@ export class TelescopeOverlay {
 	private currentZoom: ZoomLevel = 'document';
 	private currentDocument: any = null;
 	private plugin: FornaxPlugin;
+	private isInternalUpdate: boolean = false;
 
 	constructor(container: HTMLElement, plugin: FornaxPlugin) {
 		this.container = container;
@@ -164,6 +165,12 @@ export class TelescopeOverlay {
 	}
 
 	async loadDocument(file: TFile) {
+		// Skip reload if this is from our own internal update
+		if (this.isInternalUpdate) {
+			this.isInternalUpdate = false;
+			return;
+		}
+		
 		const content = await this.plugin.app.vault.read(file);
 		this.currentDocument = await this.plugin.engine.parseDocument(content);
 		this.renderCurrentZoom();
@@ -253,9 +260,8 @@ export class TelescopeOverlay {
 			// Drag handle
 			const dragHandle = paraBlock.createEl('div', { 
 				cls: 'fornax-drag-handle', 
-				text: 'DRAG ME'
+				text: '::'
 			});
-			dragHandle.style.cssText = 'background: red !important; color: white !important; padding: 10px !important; position: relative !important; display: block !important; z-index: 9999 !important; font-size: 16px !important;';
 			console.log('Created drag handle:', dragHandle);
 			
 			// Paragraph content
@@ -304,7 +310,7 @@ export class TelescopeOverlay {
 				});
 				
 				// Drag handle
-				sentBlock.createEl('div', { cls: 'fornax-drag-handle', text: '⋮' });
+				sentBlock.createEl('div', { cls: 'fornax-drag-handle', text: '::' });
 				
 				// Sentence content (editable)
 				const content = sentBlock.createEl('div', { 
@@ -329,34 +335,210 @@ export class TelescopeOverlay {
 		let isDragging = false;
 		let startY = 0;
 		let startTop = 0;
+		let draggedElement: HTMLElement | null = null;
 
 		const handle = element.querySelector('.fornax-drag-handle') as HTMLElement;
 		
-		handle.onmousedown = (e) => {
+		const handleMouseDown = (e: MouseEvent) => {
 			isDragging = true;
+			draggedElement = element;
 			startY = e.clientY;
 			startTop = element.offsetTop;
 			element.addClass('dragging');
 			document.body.style.cursor = 'grabbing';
+			
+			// Prevent text selection while dragging
+			e.preventDefault();
 		};
 
-		document.onmousemove = (e) => {
-			if (!isDragging) return;
+		const handleMouseMove = (e: MouseEvent) => {
+			if (!isDragging || !draggedElement) return;
 			
 			const deltaY = e.clientY - startY;
-			element.style.transform = `translateY(${deltaY}px)`;
+			draggedElement.style.transform = `translateY(${deltaY}px)`;
+			
+			// Highlight potential drop targets
+			this.updateDropTargets(e, draggedElement, type);
 		};
 
-		document.onmouseup = () => {
-			if (!isDragging) return;
+		const handleMouseUp = async (e: MouseEvent) => {
+			if (!isDragging || !draggedElement) return;
+			
+			// Find the drop target
+			const dropInfo = this.findDropTarget(e, draggedElement, type);
 			
 			isDragging = false;
-			element.removeClass('dragging');
-			element.style.transform = '';
+			draggedElement.removeClass('dragging');
+			draggedElement.style.transform = '';
 			document.body.style.cursor = '';
 			
-			// TODO: Handle drop logic - reorder paragraphs/sentences
+			// Clear drop target highlights
+			this.clearDropTargets(type);
+			
+			// Perform the insertion if we have a valid drop target
+			if (dropInfo && dropInfo.target !== draggedElement) {
+				await this.insertElement(draggedElement, dropInfo.target, dropInfo.position, type);
+			}
+			
+			draggedElement = null;
 		};
+
+		// Use addEventListener instead of direct assignment to avoid conflicts
+		handle.addEventListener('mousedown', handleMouseDown);
+		document.addEventListener('mousemove', handleMouseMove);
+		document.addEventListener('mouseup', handleMouseUp);
+	}
+
+	private updateDropTargets(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence') {
+		// Clear existing highlights
+		this.clearDropTargets(type);
+		
+		// Find all potential drop targets
+		const targets = this.contentEl.querySelectorAll(
+			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
+		);
+		
+		targets.forEach(target => {
+			if (target === draggedElement) return;
+			
+			const rect = target.getBoundingClientRect();
+			const mouseY = e.clientY;
+			
+			// Check if mouse is over this target
+			if (mouseY >= rect.top && mouseY <= rect.bottom) {
+				// Determine position for visual feedback
+				const middleY = rect.top + rect.height / 2;
+				const position = mouseY < middleY ? 'before' : 'after';
+				
+				target.addClass('fornax-drop-target');
+				target.addClass(`fornax-drop-${position}`);
+			}
+		});
+	}
+
+	private findDropTarget(e: MouseEvent, draggedElement: HTMLElement, type: 'paragraph' | 'sentence'): { target: HTMLElement, position: 'before' | 'after' } | null {
+		const targets = this.contentEl.querySelectorAll(
+			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
+		);
+		
+		for (let i = 0; i < targets.length; i++) {
+			const target = targets[i];
+			if (target === draggedElement) continue;
+			
+			const rect = target.getBoundingClientRect();
+			const mouseY = e.clientY;
+			
+			if (mouseY >= rect.top && mouseY <= rect.bottom) {
+				// Determine if we're inserting before or after based on mouse position within the element
+				const middleY = rect.top + rect.height / 2;
+				const position = mouseY < middleY ? 'before' : 'after';
+				
+				return { target: target as HTMLElement, position };
+			}
+		}
+		
+		return null;
+	}
+
+	private clearDropTargets(type: 'paragraph' | 'sentence') {
+		const targets = this.contentEl.querySelectorAll(
+			type === 'paragraph' ? '.fornax-paragraph-block' : '.fornax-sentence-block'
+		);
+		
+		targets.forEach(target => {
+			target.removeClass('fornax-drop-target');
+			target.removeClass('fornax-drop-before');
+			target.removeClass('fornax-drop-after');
+		});
+	}
+
+	private async insertElement(draggedElement: HTMLElement, dropTarget: HTMLElement, position: 'before' | 'after', type: 'paragraph' | 'sentence') {
+		if (type === 'paragraph') {
+			const draggedIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
+			const dropIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
+			
+			// Remove the dragged paragraph and its sentences from their current positions
+			const draggedParagraph = this.currentDocument.paragraphs.splice(draggedIndex, 1)[0];
+			const draggedSentences = this.currentDocument.sentences.splice(draggedIndex, 1)[0];
+			
+			// Calculate the insertion index
+			let insertIndex = dropIndex;
+			
+			// Adjust for the removal if dragged was before the drop target
+			if (draggedIndex < dropIndex) {
+				insertIndex = dropIndex - 1;
+			}
+			
+			// Adjust for before/after position
+			if (position === 'after') {
+				insertIndex += 1;
+			}
+			
+			// Insert at the new position
+			this.currentDocument.paragraphs.splice(insertIndex, 0, draggedParagraph);
+			this.currentDocument.sentences.splice(insertIndex, 0, draggedSentences);
+			
+		} else {
+			const draggedParaIndex = parseInt(draggedElement.getAttribute('data-para-index') || '0');
+			const draggedSentIndex = parseInt(draggedElement.getAttribute('data-sent-index') || '0');
+			const dropParaIndex = parseInt(dropTarget.getAttribute('data-para-index') || '0');
+			const dropSentIndex = parseInt(dropTarget.getAttribute('data-sent-index') || '0');
+			
+			// Remove the dragged sentence
+			const draggedSentence = this.currentDocument.sentences[draggedParaIndex].splice(draggedSentIndex, 1)[0];
+			
+			// Calculate insertion index
+			let insertIndex = dropSentIndex;
+			
+			// Adjust for removal if within same paragraph and dragged was before drop target
+			if (draggedParaIndex === dropParaIndex && draggedSentIndex < dropSentIndex) {
+				insertIndex = dropSentIndex - 1;
+			}
+			
+			// Adjust for before/after position
+			if (position === 'after') {
+				insertIndex += 1;
+			}
+			
+			// Insert at the new position
+			this.currentDocument.sentences[dropParaIndex].splice(insertIndex, 0, draggedSentence);
+			
+			// Update the paragraph content in the data model
+			this.updateParagraphsFromSentences();
+		}
+		
+		// Save changes to the actual file
+		await this.saveChangesToFile();
+		
+		// Re-render the current view to reflect the changes
+		this.renderCurrentZoom();
+	}
+
+	private updateParagraphsFromSentences() {
+		// Reconstruct paragraphs from sentences after sentence-level edits
+		this.currentDocument.paragraphs = this.currentDocument.sentences.map((sentenceArray: string[]) => 
+			sentenceArray.join(' ')
+		);
+	}
+
+	private async saveChangesToFile() {
+		// Get the current file from the plugin
+		const currentFile = this.plugin.app.workspace.getActiveFile();
+		if (!currentFile) return;
+
+		// Reconstruct the markdown content
+		const newContent = this.reconstructMarkdown();
+		
+		// Mark this as an internal update to prevent reload
+		this.isInternalUpdate = true;
+		
+		// Save to file
+		await this.plugin.app.vault.modify(currentFile, newContent);
+	}
+
+	private reconstructMarkdown(): string {
+		// Join paragraphs with double newlines to recreate markdown structure
+		return this.currentDocument.paragraphs.join('\n\n');
 	}
 
 	private openSentenceEditor(paraIndex: number, sentIndex: number, sentence: string) {
@@ -424,7 +606,7 @@ export class TelescopeOverlay {
 
 				.fornax-paragraph-block, .fornax-sentence-block {
 					position: relative;
-					margin: 12px 0;
+					margin: 12px 0 12px 32px;
 					padding: 16px;
 					background: var(--background-primary);
 					border: 1px solid var(--background-modifier-border);
@@ -439,16 +621,17 @@ export class TelescopeOverlay {
 
 				.fornax-drag-handle {
 					position: absolute;
-					left: 8px;
+					left: -20px;
 					top: 50%;
 					transform: translateY(-50%);
 					color: var(--text-muted);
 					cursor: grab;
 					font-size: 16px;
-					opacity: 1;
-					background: red;
+					opacity: 0.6;
 					padding: 4px;
 					z-index: 10;
+					font-weight: bold;
+					user-select: none;
 				}
 
 				.fornax-paragraph-block:hover .fornax-drag-handle,
@@ -547,6 +730,20 @@ export class TelescopeOverlay {
 					z-index: 1000;
 					box-shadow: 0 4px 16px var(--background-modifier-box-shadow) !important;
 					transform: rotate(2deg);
+				}
+
+				.fornax-drop-target {
+					border-color: var(--interactive-accent) !important;
+					background: var(--interactive-accent-hover) !important;
+					transform: scale(1.02);
+				}
+
+				.fornax-drop-before {
+					border-top: 3px solid var(--interactive-accent) !important;
+				}
+
+				.fornax-drop-after {
+					border-bottom: 3px solid var(--interactive-accent) !important;
 				}
 			`;
 			document.head.appendChild(style);
