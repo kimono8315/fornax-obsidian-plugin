@@ -531,6 +531,7 @@ export class TelescopeOverlay {
 				} else {
 					// Check if this sentence has alternatives
 					const hasAlternatives = this.sentenceHasAlternatives(paraIndex, sentIndex);
+					const alternativesData = this.getSentenceAlternatives(paraIndex, sentIndex);
 
 					const sentBlock = sentenceContainer.createEl('div', {
 						cls: `fornax-sentence-block ${hasAlternatives ? 'fornax-has-alternatives' : ''}`,
@@ -543,19 +544,37 @@ export class TelescopeOverlay {
 					// Drag handle
 					sentBlock.createEl('div', { cls: 'fornax-drag-handle', text: '::' });
 
-					// Sentence content (editable)
-					const content = sentBlock.createEl('div', {
+					// Main sentence row with current content and buttons
+					const sentenceRow = sentBlock.createEl('div', { cls: 'fornax-sentence-row' });
+
+					// Sentence content (current active sentence)
+					const content = sentenceRow.createEl('div', {
 						cls: 'fornax-sentence-content',
 						text: sentence
 					});
 
-					// Edit button
-					const editBtn = sentBlock.createEl('button', {
-						cls: 'fornax-edit-sentence-btn',
-						text: '✏️'
+					// Add button (for adding new alternatives)
+					const addBtn = sentenceRow.createEl('button', {
+						cls: 'fornax-add-alternative-btn',
+						text: '+'
 					});
 
-					editBtn.onclick = () => this.openSentenceEditor(paraIndex, sentIndex, sentence);
+					addBtn.onclick = () => this.showAddAlternativeInput(sentBlock, paraIndex, sentIndex);
+
+					// Save/check button (only if there are alternatives to commit)
+					if (hasAlternatives) {
+						const saveBtn = sentenceRow.createEl('button', {
+							cls: 'fornax-save-final-btn',
+							text: '✓'
+						});
+
+						saveBtn.onclick = () => this.commitSentenceChoice(paraIndex, sentIndex);
+					}
+
+					// Always show alternatives if they exist (no expand/collapse)
+					if (hasAlternatives) {
+						this.showSentenceAlternatives(sentBlock, paraIndex, sentIndex);
+					}
 
 					this.makeDraggable(sentBlock, 'sentence');
 				}
@@ -1016,7 +1035,7 @@ export class TelescopeOverlay {
 		const lines = paragraph.split('\n');
 		let sentenceLineIndex = -1;
 		let nonCommentLineCount = 0;
-		
+
 		// Find the sentence line
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i].trim();
@@ -1028,9 +1047,9 @@ export class TelescopeOverlay {
 				nonCommentLineCount++;
 			}
 		}
-		
+
 		if (sentenceLineIndex === -1) return false;
-		
+
 		// Check for alternatives immediately following the sentence
 		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
 			const line = lines[i].trim();
@@ -1045,8 +1064,64 @@ export class TelescopeOverlay {
 				break;
 			}
 		}
-		
+
 		return false;
+	}
+
+	private getSentenceAlternatives(paraIndex: number, sentIndex: number): { alternatives: string[], selectedIndex: number, original: string } {
+		// Get sentence alternatives with selection information
+		if (!this.currentDocument.rawParagraphs || paraIndex >= this.currentDocument.rawParagraphs.length) {
+			return { alternatives: [], selectedIndex: -1, original: '' };
+		}
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+
+		if (sentenceLineIndex === -1) {
+			return { alternatives: [], selectedIndex: -1, original: '' };
+		}
+
+		const alternatives: string[] = [];
+		let selectedIndex = -1;
+		let foundOriginal = '';
+		const currentSentence = lines[sentenceLineIndex].trim();
+
+		// Look for alternatives and original immediately following the sentence
+		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line.startsWith('%%') && line.endsWith('%%')) {
+				const commentContent = line.slice(2, -2).trim();
+				if (commentContent.startsWith('SELECTED:')) {
+					selectedIndex = parseInt(commentContent.split(':')[1]);
+				} else if (commentContent.startsWith('ORIGINAL:')) {
+					foundOriginal = commentContent.slice(9).trim(); // Remove "ORIGINAL: "
+				} else {
+					alternatives.push(commentContent);
+				}
+			} else if (line) {
+				// Hit next sentence, stop looking
+				break;
+			}
+		}
+
+		// If we found an original, the current sentence is a selected alternative
+		const original = foundOriginal || currentSentence;
+
+		return { alternatives, selectedIndex, original };
 	}
 
 	private paragraphHasComments(paraIndex: number): boolean {
@@ -1218,6 +1293,371 @@ export class TelescopeOverlay {
 		modal.open();
 	}
 
+
+	private showSentenceAlternatives(sentBlock: HTMLElement, paraIndex: number, sentIndex: number) {
+		const alternativesData = this.getSentenceAlternatives(paraIndex, sentIndex);
+		const { alternatives, selectedIndex, original } = alternativesData;
+
+		// Create alternatives container
+		const alternativesContainer = sentBlock.createEl('div', { cls: 'fornax-alternatives-container' });
+
+		// Show original sentence first (if different from current)
+		const currentSentence = this.currentDocument.sentences[paraIndex][sentIndex];
+		if (original && original !== currentSentence) {
+			const originalItem = this.createAlternativeItem(alternativesContainer, original, paraIndex, sentIndex, -1, selectedIndex === -1);
+			originalItem.addClass('fornax-original-sentence');
+		}
+
+		// Show all alternatives
+		alternatives.forEach((alternative, altIndex) => {
+			this.createAlternativeItem(alternativesContainer, alternative, paraIndex, sentIndex, altIndex, selectedIndex === altIndex);
+		});
+	}
+
+	private createAlternativeItem(container: HTMLElement, text: string, paraIndex: number, sentIndex: number, altIndex: number, isSelected: boolean): HTMLElement {
+		const item = container.createEl('div', { cls: 'fornax-alternative-item' });
+
+		// Radio button for selection
+		const radio = item.createEl('input', {
+			type: 'radio',
+			cls: 'fornax-alternative-radio',
+			attr: {
+				name: `sentence-${paraIndex}-${sentIndex}`,
+				value: altIndex.toString()
+			}
+		});
+
+		if (isSelected) {
+			radio.checked = true;
+		}
+
+		radio.onchange = () => this.selectSentenceAlternative(paraIndex, sentIndex, altIndex);
+
+		// Alternative text
+		const textEl = item.createEl('div', {
+			cls: 'fornax-alternative-text',
+			text: text
+		});
+
+		// Delete button (except for original)
+		if (altIndex >= 0) {
+			const deleteBtn = item.createEl('button', {
+				cls: 'fornax-delete-alternative-btn',
+				text: '×'
+			});
+
+			deleteBtn.onclick = () => this.deleteAlternative(paraIndex, sentIndex, altIndex);
+		}
+
+		return item;
+	}
+
+	private showAddAlternativeInput(sentBlock: HTMLElement, paraIndex: number, sentIndex: number) {
+		// Check if input already exists
+		const existingInput = sentBlock.querySelector('.fornax-add-input');
+		if (existingInput) return;
+
+		const sentenceRow = sentBlock.querySelector('.fornax-sentence-row');
+		const inputContainer = sentBlock.createEl('div', { cls: 'fornax-add-input' });
+
+		const textArea = inputContainer.createEl('textarea', {
+			cls: 'fornax-alternative-input',
+			attr: { placeholder: 'Enter new alternative...' }
+		});
+
+		const buttonContainer = inputContainer.createEl('div', { cls: 'fornax-input-buttons' });
+
+		const saveBtn = buttonContainer.createEl('button', {
+			cls: 'fornax-save-alternative-btn',
+			text: 'Save'
+		});
+
+		const cancelBtn = buttonContainer.createEl('button', {
+			cls: 'fornax-cancel-alternative-btn',
+			text: 'Cancel'
+		});
+
+		saveBtn.onclick = () => this.saveNewAlternative(paraIndex, sentIndex, textArea.value, sentBlock);
+		cancelBtn.onclick = () => inputContainer.remove();
+
+		textArea.focus();
+	}
+
+	private async commitSentenceChoice(paraIndex: number, sentIndex: number) {
+		// Finalize the current sentence choice and remove all alternative comments
+		if (!this.currentDocument.rawParagraphs) return;
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+
+		if (sentenceLineIndex === -1) return;
+
+		// Remove all alternative comments following this sentence
+		const indicesToRemove: number[] = [];
+		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line.startsWith('%%') && line.endsWith('%%')) {
+				const commentContent = line.slice(2, -2).trim();
+				// Remove ORIGINAL, SELECTED, and alternative comments
+				if (commentContent.startsWith('ORIGINAL:') ||
+					commentContent.startsWith('SELECTED:') ||
+					(!commentContent.startsWith('PARAGRAPH_COMPLETE') && commentContent !== 'PARAGRAPH_COMPLETE')) {
+					indicesToRemove.push(i);
+				}
+			} else if (line) {
+				// Hit next sentence, stop looking
+				break;
+			}
+		}
+
+		// Remove comments in reverse order to maintain indices
+		for (let i = indicesToRemove.length - 1; i >= 0; i--) {
+			lines.splice(indicesToRemove[i], 1);
+		}
+
+		// Update the paragraph
+		this.currentDocument.rawParagraphs[paraIndex] = lines.join('\n');
+
+		// Sync changes and save
+		this.syncFromRawParagraphs();
+		await this.saveChangesToFile();
+
+		// Re-render to show updated content (sentence should no longer show alternatives)
+		this.renderCurrentZoom();
+	}
+
+	private async selectSentenceAlternative(paraIndex: number, sentIndex: number, altIndex: number) {
+		// Select a different alternative for this sentence
+		const alternativesData = this.getSentenceAlternatives(paraIndex, sentIndex);
+		const { alternatives, original } = alternativesData;
+
+		if (!this.currentDocument.rawParagraphs) return;
+
+		let newSentenceText = '';
+		if (altIndex === -1) {
+			// Selecting original
+			newSentenceText = original;
+		} else if (altIndex < alternatives.length) {
+			// Selecting an alternative
+			newSentenceText = alternatives[altIndex];
+		}
+
+		if (!newSentenceText) return;
+
+		// Update the sentence in raw paragraphs while preserving comment structure
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+
+		if (sentenceLineIndex !== -1) {
+			const originalLine = lines[sentenceLineIndex];
+			const leadingSpaces = originalLine.match(/^\s*/)?.[0] || '';
+			const currentSentenceText = originalLine.trim();
+
+			// Check if we need to preserve the original sentence
+			let originalCommentExists = false;
+			let selectedCommentFound = false;
+			let selectedCommentIndex = -1;
+
+			// Check existing comments to see if ORIGINAL already exists
+			for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+				const line = lines[i].trim();
+				if (line.startsWith('%%') && line.endsWith('%%')) {
+					const commentContent = line.slice(2, -2).trim();
+					if (commentContent.startsWith('ORIGINAL:')) {
+						originalCommentExists = true;
+					} else if (commentContent.startsWith('SELECTED:')) {
+						selectedCommentFound = true;
+						selectedCommentIndex = i;
+					}
+				} else if (line) {
+					// Hit next sentence, stop looking
+					break;
+				}
+			}
+
+			// If this is the first time selecting an alternative and no ORIGINAL comment exists,
+			// we need to preserve the current sentence as the original
+			if (!originalCommentExists && altIndex !== -1) {
+				// Insert ORIGINAL comment after the sentence
+				const commentIndent = leadingSpaces;
+				lines.splice(sentenceLineIndex + 1, 0, `${commentIndent}%% ORIGINAL: ${currentSentenceText} %%`);
+
+				// Adjust selectedCommentIndex if it existed
+				if (selectedCommentIndex !== -1) {
+					selectedCommentIndex++;
+				}
+			}
+
+			// Replace the sentence text with the selected alternative/original
+			lines[sentenceLineIndex] = leadingSpaces + newSentenceText;
+
+			// Update or add SELECTED comment
+			if (selectedCommentFound && selectedCommentIndex !== -1) {
+				// Update existing SELECTED comment
+				const commentLeadingSpaces = lines[selectedCommentIndex].match(/^\s*/)?.[0] || '';
+				lines[selectedCommentIndex] = `${commentLeadingSpaces}%% SELECTED:${altIndex} %%`;
+			} else if (altIndex !== -1) {
+				// Add new SELECTED comment
+				const commentIndent = leadingSpaces;
+				const insertIndex = originalCommentExists ? sentenceLineIndex + 2 : sentenceLineIndex + 1;
+				lines.splice(insertIndex, 0, `${commentIndent}%% SELECTED:${altIndex} %%`);
+			}
+
+			// If selecting original (altIndex === -1), remove SELECTED comment
+			if (altIndex === -1 && selectedCommentFound && selectedCommentIndex !== -1) {
+				lines.splice(selectedCommentIndex, 1);
+			}
+
+			// Update the paragraph
+			this.currentDocument.rawParagraphs[paraIndex] = lines.join('\n');
+
+			// Sync changes and save
+			this.syncFromRawParagraphs();
+			await this.saveChangesToFile();
+
+			// Re-render to show updated content
+			this.renderCurrentZoom();
+		}
+	}
+
+	private async deleteAlternative(paraIndex: number, sentIndex: number, altIndex: number) {
+		// Delete a specific alternative
+		if (!this.currentDocument.rawParagraphs || altIndex < 0) return;
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+
+		if (sentenceLineIndex === -1) return;
+
+		// Find and remove the alternative comment
+		let currentAltIndex = 0;
+		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line.startsWith('%%') && line.endsWith('%%')) {
+				const commentContent = line.slice(2, -2).trim();
+				if (!commentContent.startsWith('SELECTED:') && !commentContent.startsWith('ORIGINAL:')) {
+					// This is an alternative
+					if (currentAltIndex === altIndex) {
+						// Remove this line
+						lines.splice(i, 1);
+						break;
+					}
+					currentAltIndex++;
+				}
+			} else if (line) {
+				// Hit next sentence, stop looking
+				break;
+			}
+		}
+
+		// Update the paragraph
+		this.currentDocument.rawParagraphs[paraIndex] = lines.join('\n');
+
+		// Sync changes and save
+		this.syncFromRawParagraphs();
+		await this.saveChangesToFile();
+
+		// Re-render to show updated content
+		this.renderCurrentZoom();
+	}
+
+	private async saveNewAlternative(paraIndex: number, sentIndex: number, newText: string, sentBlock: HTMLElement) {
+		// Save a new alternative for this sentence
+		if (!newText.trim() || !this.currentDocument.rawParagraphs) return;
+
+		const paragraph = this.currentDocument.rawParagraphs[paraIndex];
+		const lines = paragraph.split('\n');
+		let sentenceLineIndex = -1;
+		let nonCommentLineCount = 0;
+
+		// Find the sentence line
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line && !(line.startsWith('%%') && line.endsWith('%%'))) {
+				if (nonCommentLineCount === sentIndex) {
+					sentenceLineIndex = i;
+					break;
+				}
+				nonCommentLineCount++;
+			}
+		}
+
+		if (sentenceLineIndex === -1) return;
+
+		// Find where to insert the new alternative (after existing alternatives)
+		let insertIndex = sentenceLineIndex + 1;
+		for (let i = sentenceLineIndex + 1; i < lines.length; i++) {
+			const line = lines[i].trim();
+			if (line.startsWith('%%') && line.endsWith('%%')) {
+				insertIndex = i + 1;
+			} else if (line) {
+				// Hit next sentence, stop looking
+				break;
+			}
+		}
+
+		// Insert the new alternative
+		const commentIndent = lines[sentenceLineIndex].match(/^\s*/)?.[0] || '';
+		lines.splice(insertIndex, 0, `${commentIndent}%% ${newText.trim()} %%`);
+
+		// Update the paragraph
+		this.currentDocument.rawParagraphs[paraIndex] = lines.join('\n');
+
+		// Sync changes and save
+		this.syncFromRawParagraphs();
+		await this.saveChangesToFile();
+
+		// Remove the input container
+		const inputContainer = sentBlock.querySelector('.fornax-add-input');
+		if (inputContainer) {
+			inputContainer.remove();
+		}
+
+		// Re-render to show updated content
+		this.renderCurrentZoom();
+	}
 
 	private addStyles() {
 		// Add CSS styles for the telescope interface
@@ -1539,6 +1979,168 @@ export class TelescopeOverlay {
 				.fornax-paragraph-block.fornax-paragraph-complete {
 					background: rgba(76, 175, 80, 0.15) !important;
 					border-left: 3px solid #4caf50 !important;
+				}
+
+				/* Inline sentence alternatives styling */
+				.fornax-sentence-row {
+					display: flex;
+					align-items: center;
+					gap: 8px;
+					flex-wrap: wrap;
+				}
+
+				.fornax-sentence-content {
+					flex: 1;
+					min-width: 0;
+				}
+
+				.fornax-add-alternative-btn, .fornax-save-final-btn {
+					background: none;
+					border: 1px solid var(--background-modifier-border);
+					border-radius: 3px;
+					padding: 2px 6px;
+					font-size: 11px;
+					color: var(--text-muted);
+					cursor: pointer;
+					opacity: 0.7;
+					transition: opacity 0.2s ease;
+				}
+
+				.fornax-add-alternative-btn:hover, .fornax-save-final-btn:hover {
+					opacity: 1;
+					background: var(--background-modifier-hover);
+				}
+
+				.fornax-save-final-btn {
+					color: var(--color-green);
+					border-color: var(--color-green);
+				}
+
+				.fornax-save-final-btn:hover {
+					background: rgba(76, 175, 80, 0.1);
+				}
+
+				.fornax-alternatives-container {
+					margin-top: 8px;
+					padding: 8px;
+					background: var(--background-secondary);
+					border-radius: 4px;
+					border: 1px solid var(--background-modifier-border);
+				}
+
+				.fornax-alternative-item {
+					display: flex;
+					align-items: flex-start;
+					gap: 8px;
+					margin-bottom: 6px;
+					padding: 4px;
+					border-radius: 3px;
+				}
+
+				.fornax-alternative-item:last-child {
+					margin-bottom: 0;
+				}
+
+				.fornax-alternative-item:hover {
+					background: var(--background-modifier-hover);
+				}
+
+				.fornax-alternative-radio {
+					margin-top: 2px;
+					cursor: pointer;
+				}
+
+				.fornax-alternative-text {
+					flex: 1;
+					font-size: 13px;
+					line-height: 1.4;
+					word-wrap: break-word;
+				}
+
+				.fornax-original-sentence .fornax-alternative-text {
+					font-style: italic;
+					color: var(--text-muted);
+				}
+
+				.fornax-delete-alternative-btn {
+					background: none;
+					border: none;
+					color: var(--text-error);
+					cursor: pointer;
+					font-size: 16px;
+					line-height: 1;
+					padding: 0;
+					width: 20px;
+					height: 20px;
+					display: flex;
+					align-items: center;
+					justify-content: center;
+					border-radius: 2px;
+					opacity: 0.6;
+					transition: opacity 0.2s ease;
+				}
+
+				.fornax-delete-alternative-btn:hover {
+					opacity: 1;
+					background: var(--background-modifier-error-hover);
+				}
+
+				.fornax-add-input {
+					margin-top: 8px;
+					padding: 8px;
+					background: var(--background-secondary);
+					border-radius: 4px;
+					border: 1px solid var(--background-modifier-border);
+				}
+
+				.fornax-alternative-input {
+					width: 100%;
+					min-height: 60px;
+					resize: vertical;
+					padding: 8px;
+					border: 1px solid var(--background-modifier-border);
+					border-radius: 3px;
+					background: var(--background-primary);
+					color: var(--text-normal);
+					font-family: inherit;
+					font-size: 13px;
+					line-height: 1.4;
+				}
+
+				.fornax-alternative-input:focus {
+					outline: none;
+					border-color: var(--interactive-accent);
+				}
+
+				.fornax-input-buttons {
+					display: flex;
+					gap: 8px;
+					margin-top: 8px;
+					justify-content: flex-end;
+				}
+
+				.fornax-save-alternative-btn, .fornax-cancel-alternative-btn {
+					padding: 4px 12px;
+					border: 1px solid var(--background-modifier-border);
+					border-radius: 3px;
+					background: var(--background-primary);
+					color: var(--text-normal);
+					cursor: pointer;
+					font-size: 12px;
+				}
+
+				.fornax-save-alternative-btn {
+					background: var(--interactive-accent);
+					color: var(--text-on-accent);
+					border-color: var(--interactive-accent);
+				}
+
+				.fornax-save-alternative-btn:hover {
+					background: var(--interactive-accent-hover);
+				}
+
+				.fornax-cancel-alternative-btn:hover {
+					background: var(--background-modifier-hover);
 				}
 			`;
 			document.head.appendChild(style);
